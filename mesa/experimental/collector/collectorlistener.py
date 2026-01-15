@@ -55,21 +55,16 @@ class BaseListener:
 
 
 class CollectorListener(BaseListener):
-    """The direct replacement for DataCollector with C-speed optimizations.
+    """The replacement for DataCollector with C-speed optimizations.
 
     Architecture:
-    - **Columnar Storage:** Uses `Dict[str, List]` instead of `List[Dict]`. This ensures
+    - Columnar Storage: Uses `Dict[str, List]` instead of `List[Dict]`. This ensures
       contiguity in memory and allows for O(1) appends.
-    - **Pre-compiled Accessors:** When reporters are strings (e.g., "wealth"),
+    - Pre-compiled Accessors: When reporters are strings (e.g., "wealth"),
       this class compiles them into `operator.attrgetter` callables, which run at
       C-speed, bypassing Python's `getattr` loop overhead.
-    - **Sparse Handling:** Automatically handles agents dying or being removed;
+    - Efficient Handling: Automatically handles agents dying or being removed;
       data is only collected for agents present in `model.agents` at the current step.
-
-    Attributes:
-        model_vars (dict): Dictionary storing model-level data.
-        agent_reporters (dict): Configuration for agent-level data collection.
-        tables (dict): Storage for custom tabular data.
     """
 
     def __init__(
@@ -82,7 +77,7 @@ class CollectorListener(BaseListener):
         """Initialize the CollectorListener.
 
         Args:
-            model: The Mesa model to observe.
+            model: The model to observe.
             model_reporters: Dictionary mapping column names to attributes/functions
                              for model-level data.
             agent_reporters: Dictionary mapping column names to attributes/functions
@@ -92,7 +87,6 @@ class CollectorListener(BaseListener):
         """
         super().__init__(model)
 
-        # --- 1. SETUP STORAGE ---
         raw_model_reporters = model_reporters or {}
         self.agent_reporters = agent_reporters or {}
         self.tables_config = tables or {}
@@ -107,7 +101,6 @@ class CollectorListener(BaseListener):
             name: {col: [] for col in cols} for name, cols in self.tables_config.items()
         }
 
-        # --- 2. COMPILE MODEL COLLECTOR ---
         # Handle string reporters by converting to attrgetter
         self._model_reporters = {}
         for name, reporter in raw_model_reporters.items():
@@ -116,35 +109,41 @@ class CollectorListener(BaseListener):
             else:
                 self._model_reporters[name] = reporter
 
-        # --- 3. COMPILE AGENT COLLECTOR ---
-        # Optimization: Bundle 'unique_id' into the getter to fetch everything in one pass
+        # Compile the best strategy for agent collection
+        self._collect_agents = self._setup_agent_collection()
+
+    def _setup_agent_collection(self) -> Callable:
+        """Determine and compile the optimal agent collection strategy.
+
+        Returns:
+            The bound method to be used for agent collection.
+        """
+        # Case 1: No reporters defined
         if not self.agent_reporters:
-            self._collect_agents = self._collect_agents_noop
-        elif all(isinstance(v, str) for v in self.agent_reporters.values()):
+            return self._collect_agents_noop
+
+        # Case 2: All reporters are strings
+        # We can use the "Fast Path" (C-speed attrgetter + zip)
+        if all(isinstance(v, str) for v in self.agent_reporters.values()):
             # Create a single getter for [unique_id, attr1, attr2, ...]
-            # This allows fetching ALL data for an agent in ONE C-call.
-            # FIX: RUF005 - Use iterable unpacking instead of concatenation
             all_attrs = ["unique_id", *self.agent_reporters.values()]
             self._agent_getter = operator.attrgetter(*all_attrs)
 
-            # Cache the destination lists: [AgentID List, Attr1 List, Attr2 List...]
-            # Order matches the attrgetter keys
+            # Cache the destination lists for O(1) retrieval during step
             self._agent_targets = [self._agent_data["AgentID"]] + [
                 self._agent_data[k] for k in self.agent_reporters
             ]
 
-            self._collect_agents = self._collect_agents_fast_zip
-        else:
-            self._collect_agents = self._collect_agents_slow
+            return self._collect_agents_fast_zip
 
-    # --- MODEL COLLECTION STRATEGIES ---
+        # Case 3: Mixed reporters (Functions/Lambdas)
+        # Fallback to standard Python iteration
+        return self._collect_agents_slow
 
     def _collect_model(self, model):
         """Collects data for all model reporters."""
         for name, reporter in self._model_reporters.items():
             self.model_vars[name].append(reporter(model))
-
-    # --- AGENT COLLECTION STRATEGIES ---
 
     def _collect_agents_noop(self, model, step):
         """No-op strategy when no agent reporters are defined."""
@@ -171,10 +170,9 @@ class CollectorListener(BaseListener):
         if hasattr(agents, "_agents"):
             agents = agents._agents
         elif isinstance(agents, dict):
-            # Only if it's a raw dict (user custom), assume ID->Agent and take values.
+            # Only if it's a raw dict
             agents = agents.values()
 
-        # zip(*map(...)) is the standard idiom for fast transposition
         try:
             cols = zip(*map(self._agent_getter, agents))
 
