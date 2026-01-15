@@ -8,9 +8,11 @@ when they occupy the same cell.
 """
 
 from mesa import Model
-from mesa.datacollection import DataCollector
 from mesa.discrete_space import OrthogonalMooreGrid
 from mesa.examples.basic.boltzmann_wealth_model.agents import MoneyAgent
+from mesa.experimental.collector.collectorlistener import (
+    CollectorListener as DataCollector,
+)
 
 
 class BoltzmannWealth(Model):
@@ -43,7 +45,8 @@ class BoltzmannWealth(Model):
 
         # Set up data collection
         self.datacollector = DataCollector(
-            model_reporters={"Gini": self.compute_gini},
+            self,
+            model_reporters={"Gini": lambda m: m.compute_gini()},
             agent_reporters={"Wealth": "wealth"},
         )
         MoneyAgent.create_agents(
@@ -53,11 +56,9 @@ class BoltzmannWealth(Model):
         )
 
         self.running = True
-        self.datacollector.collect(self)
 
     def step(self):
         self.agents.shuffle_do("step")  # Activate all agents in random order
-        self.datacollector.collect(self)  # Collect data
 
     def compute_gini(self):
         """Calculate the Gini coefficient for the model's current wealth distribution.
