@@ -18,7 +18,6 @@ import numpy as np
 
 from mesa.agent import Agent, AgentSet
 from mesa.experimental.devs import Simulator
-from mesa.experimental.mesa_signals import HasObservables
 from mesa.experimental.scenarios import Scenario
 from mesa.mesa_logging import create_module_logger, method_logger
 
@@ -30,7 +29,7 @@ _mesa_logger = create_module_logger()
 
 
 # TODO: We can add `= Scenario` default type when Python 3.13+ is required
-class Model[A: Agent, S: Scenario](HasObservables):
+class Model[A: Agent, S: Scenario]:
     """Base class for models in the Mesa ABM library.
 
     This class serves as a foundational structure for creating agent-based models.
@@ -90,15 +89,12 @@ class Model[A: Agent, S: Scenario](HasObservables):
                   `numpy.random.default_rng` to instantiate a `Generator`.
             scenario: the scenario specifying the computational experiment to run
             kwargs: keyword arguments to pass onto super
+
+        Notes:
+            you have to pass either seed or rng, but not both.
+
         """
-        # 1. Initialize Reactive System (REQUIRED for Listeners)
-        HasObservables.__init__(self)
-
-        # Register Standard Signals that Listeners subscribe to
-        self._register_signal_emitter("step", {"step"})
-        self._register_signal_emitter("reset", {"reset"})
-        self._register_signal_emitter("end", {"end"})
-
+        super().__init__(*args, **kwargs)
         self.running: bool = True
         self.steps: int = 0
         self.time: float = 0.0
@@ -152,7 +148,6 @@ class Model[A: Agent, S: Scenario](HasObservables):
         self.scenario = scenario
 
         # Wrap the user-defined step method
-        # This is CRITICAL: It ensures the 'step' signal is emitted for the Listener
         self._user_step = self.step
         self.step = self._wrapped_step
 
@@ -180,9 +175,6 @@ class Model[A: Agent, S: Scenario](HasObservables):
         )
         # Call the original user-defined step method
         self._user_step(*args, **kwargs)
-
-        # TRIGGER LISTENER: This notifies listeners that a step finished.
-        self.notify("step", self, self, "step")
 
     @property
     def agents(self) -> AgentSet[A]:
@@ -262,13 +254,6 @@ class Model[A: Agent, S: Scenario](HasObservables):
 
     def step(self) -> None:
         """A single step. Fill in here."""
-
-    def reset(self):
-        """Resets the model to its initial state."""
-        self.steps = 0
-        self.time = 0.0
-        self.running = True
-        self.notify("reset", self, self, "reset")
 
     def reset_randomizer(self, seed: int | None = None) -> None:
         """Reset the model random number generator.
