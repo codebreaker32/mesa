@@ -1,9 +1,7 @@
 from mesa import Model
+from mesa.datacollection import DataCollector
 from mesa.discrete_space import OrthogonalMooreGrid
 from mesa.examples.basic.schelling.agents import SchellingAgent
-from mesa.experimental.collector.collectorlistener import (
-    CollectorListener as DataCollector,
-)
 
 
 class Schelling(Model):
@@ -44,7 +42,6 @@ class Schelling(Model):
 
         # Set up data collection
         self.datacollector = DataCollector(
-            self,
             model_reporters={
                 "happy": "happy",
                 "pct_happy": lambda m: (m.happy / len(m.agents)) * 100
@@ -72,10 +69,12 @@ class Schelling(Model):
 
         # Collect initial state
         self.agents.do("assign_state")
+        self.datacollector.collect(self)
 
     def step(self):
         """Run one step of the model."""
         self.happy = 0  # Reset counter of happy agents
         self.agents.shuffle_do("step")  # Activate all agents in random order
         self.agents.do("assign_state")
+        self.datacollector.collect(self)  # Collect data
         self.running = self.happy < len(self.agents)  # Continue until everyone is happy

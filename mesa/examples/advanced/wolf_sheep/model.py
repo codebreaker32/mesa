@@ -12,11 +12,9 @@ Replication of the model found in NetLogo:
 import math
 
 from mesa import Model
+from mesa.datacollection import DataCollector
 from mesa.discrete_space import OrthogonalVonNeumannGrid
 from mesa.examples.advanced.wolf_sheep.agents import GrassPatch, Sheep, Wolf
-from mesa.experimental.collector.collectorlistener import (
-    CollectorListener as DataCollector,
-)
 from mesa.experimental.devs import ABMSimulator
 
 
@@ -89,7 +87,7 @@ class WolfSheep(Model):
                 m.agents_by_type[GrassPatch].select(lambda a: a.fully_grown)
             )
 
-        self.datacollector = DataCollector(self, model_reporters)
+        self.datacollector = DataCollector(model_reporters)
 
         # Create sheep:
         Sheep.create_agents(
@@ -122,9 +120,13 @@ class WolfSheep(Model):
 
         # Collect initial data
         self.running = True
+        self.datacollector.collect(self)
 
     def step(self):
         """Execute one step of the model."""
         # First activate all sheep, then all wolves, both in random order
         self.agents_by_type[Sheep].shuffle_do("step")
         self.agents_by_type[Wolf].shuffle_do("step")
+
+        # Collect data
+        self.datacollector.collect(self)
