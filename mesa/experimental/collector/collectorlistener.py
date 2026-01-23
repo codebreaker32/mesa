@@ -273,9 +273,9 @@ class CollectorListener:
         """Store data snapshot based on type."""
         added_bytes = 0
 
-        # Numpy array (NumpyAgentDataSet) - MUST COPY
-        if isinstance(data, np.ndarray):
-            if data.size > 0:
+        match data:
+            # Numpy array (NumpyAgentDataSet)
+            case np.ndarray() if data.size > 0:
                 # CRITICAL: Copy to prevent mutation
                 data_copy = data.copy()
                 storage.blocks.append((step, data_copy))
@@ -297,9 +297,8 @@ class CollectorListener:
                             f"col_{i}" for i in range(n_cols)
                         ]
 
-        # List of dicts (AgentDataSet)
-        elif isinstance(data, list):
-            if data:
+            # List of dicts (AgentDataSet)
+            case list() if data:
                 storage.blocks.append((step, data))
                 storage.total_rows += len(data)
                 added_bytes = len(data) * 100  # Estimate
@@ -308,26 +307,30 @@ class CollectorListener:
                     storage.metadata["type"] = "agentdataset"
                     storage.metadata["columns"] = list(data[0].keys())
 
-        # Single dict (ModelDataSet)
-        elif isinstance(data, dict):
-            # Add step directly to dict
-            row = {**data, "step": step}
-            storage.blocks.append(row)
-            storage.total_rows += 1
-            added_bytes = 100  # Estimate
+            # Single dict (ModelDataSet)
+            case dict():
+                # Add step directly to dict
+                row = {**data, "step": step}
+                storage.blocks.append(row)
+                storage.total_rows += 1
+                added_bytes = 100  # Estimate
 
-            if "type" not in storage.metadata:
-                storage.metadata["type"] = "modeldataset"
-                storage.metadata["columns"] = [*list(data.keys()), "step"]
+                if "type" not in storage.metadata:
+                    storage.metadata["type"] = "modeldataset"
+                    storage.metadata["columns"] = [*list(data.keys()), "step"]
 
-        # Fallback
-        else:
-            storage.blocks.append((step, data))
-            storage.total_rows += 1
-            added_bytes = 100
+            # Handle empty containers explicitly to prevent falling through to fallback
+            case np.ndarray() | list():
+                pass
 
-            if "type" not in storage.metadata:
-                storage.metadata["type"] = "custom"
+            # Fallback for custom types
+            case _:
+                storage.blocks.append((step, data))
+                storage.total_rows += 1
+                added_bytes = 100
+
+                if "type" not in storage.metadata:
+                    storage.metadata["type"] = "custom"
 
         storage.estimated_size_bytes += added_bytes
 
@@ -388,20 +391,21 @@ class CollectorListener:
         data_type = storage.metadata.get("type", "unknown")
 
         # Dispatch to appropriate converter
-        if data_type == "numpyagentdataset":
-            return self._convert_numpyAgentDataSet(storage)
-        elif data_type == "agentdataset":
-            return self._convert_agentDataSet(storage)
-        elif data_type == "modeldataset":
-            return self._convert_modelDataSet(storage)
-        else:
-            # Fallback
-            warnings.warn(
-                f"Unknown data type '{data_type}' for '{name}'",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return pd.DataFrame(storage.blocks)
+        match data_type:
+            case "numpyagentdataset":
+                return self._convert_numpyAgentDataSet(storage)
+            case "agentdataset":
+                return self._convert_agentDataSet(storage)
+            case "modeldataset":
+                return self._convert_modelDataSet(storage)
+            case _:
+                # Fallback
+                warnings.warn(
+                    f"Unknown data type '{data_type}' for '{name}'",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                return pd.DataFrame(storage.blocks)
 
     def _convert_numpyAgentDataSet(self, storage: DatasetStorage) -> pd.DataFrame:
         """Convert numpy array blocks to DataFrame."""
