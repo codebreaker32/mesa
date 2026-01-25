@@ -156,7 +156,6 @@ class SQLListener(BaseCollectorListener):
 
         Example:
             df = listener.query("SELECT AVG(wealth) as avg_wealth FROM wealth GROUP BY step")
-
         """
         return pd.read_sql(sql, self.conn)
 

@@ -61,8 +61,7 @@ class CollectorListener(BaseCollectorListener):
 
     Orchestrates data collection from DataRegistry using Observable signals,
     storing all data in memory using efficient block storage.
-
-    This is the default implementation that maintains backward compatibility
+    This is the default implementation
 
     Usage:
         # Basic - auto-collect via observable
