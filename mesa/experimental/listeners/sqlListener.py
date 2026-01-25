@@ -1,6 +1,6 @@
 """Example: SQL-based storage backend for CollectorListener.
 
-This demonstrates how easy it is to create a custom storage backend
+This demonstrates how to create a custom storage backend
 by subclassing BaseCollectorListener.
 """
 
@@ -15,12 +15,6 @@ from .collectorlistener import BaseCollectorListener
 
 class SQLListener(BaseCollectorListener):
     """Store collected data in SQLite database.
-
-    Perfect for:
-    - Very large simulations that exceed memory
-    - Persistent storage across runs
-    - Direct SQL querying of results
-    - Incremental analysis during simulation
 
     Usage:
         model = WealthModel(n_agents=100)
@@ -163,12 +157,6 @@ class SQLListener(BaseCollectorListener):
         Example:
             df = listener.query("SELECT AVG(wealth) as avg_wealth FROM wealth GROUP BY step")
 
-        Notes:
-            To address the S608 SQL injection warnings from ruff while keeping the logic strictly unchanged,
-            we are wrapping table names in double quotes ("{name}") to safely handle special characters.
-            Since SQL parameters cannot be used for table names,
-            and our code already validates that the dataset_name exists in our internal metadata,
-            we add # noqa: S608 to explicitly tell the linter this is safe
         """
         return pd.read_sql(sql, self.conn)
 
