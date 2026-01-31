@@ -1,8 +1,4 @@
-"""Example: parquet-based storage backend for CollectorListener.
-
-This demonstrates howto create a custom storage backend
-by subclassing BaseCollectorListener.
-"""
+"""Example: parquet-based storage backend for CollectorListener."""
 
 import os
 import pathlib
@@ -11,47 +7,19 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .collectorlistener import BaseCollectorListener
+from .collectorlistener import BaseCollectorListener, DatasetConfig
 
 
 class ParquetListener(BaseCollectorListener):
-    """Store collected data in Parquet files.
-
-    Usage:
-        listener = ParquetListener(model, output_dir="results/")
-        model.run_model()
-
-        Each dataset is saved to a separate parquet file
-    """
+    """Store collected data in Parquet files."""
 
     def __init__(
         self,
         model,
-        config: dict[str, dict[str, Any]] | None = None,
+        config: dict[str, DatasetConfig | dict[str, Any]] | None = None,
         output_dir: str = ".",
     ):
-        """Initialize Parquet storage backend.
-
-        Args:
-            model: Mesa model instance
-            config: Per-dataset configuration
-            output_dir: Directory to store parquet files
-
-        Usage:
-            model = WealthModel(n_agents=500)
-
-            # Create listener with Parquet storage
-            listener = ParquetListener(model, output_dir="results/")
-
-            # Run simulation
-            for _ in range(500):
-                model.step()
-
-            # Get results
-            wealth_df = listener.get_table_dataframe("wealth")
-
-            print(listener.summary())
-        """
+        """Initialize Parquet storage backend."""
         self.output_dir = pathlib.Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -177,6 +145,9 @@ class ParquetListener(BaseCollectorListener):
 
     def __del__(self):
         """Flush all buffers on cleanup."""
-        for name in self.buffers:
-            self._flush_buffer(name)
+        try:
+            for name in self.buffers:
+                self._flush_buffer(name)
+        except (RuntimeError, ImportError, NameError):
+            pass
         super().__del__()

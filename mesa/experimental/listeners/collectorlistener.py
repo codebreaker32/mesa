@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from .baseCollectorListener import BaseCollectorListener
+from .baseCollectorListener import BaseCollectorListener, DatasetConfig
 
 if TYPE_CHECKING:
     from mesa.model import Model
@@ -37,18 +37,7 @@ except ImportError:
 
 @dataclass
 class DatasetStorage:
-    """Storage container for collected dataset snapshots.
-
-    Uses block storage for memory efficiency:
-    - Numpy arrays: stored directly (already efficient)
-    - Dicts/lists: accumulated in blocks, converted to DataFrame on demand
-
-    Attributes:
-        blocks: List of (time, data) tuples
-        metadata: Dataset information (type, columns, dtype)
-        total_rows: Total data points collected
-        estimated_size_bytes: Approximate memory usage
-    """
+    """Storage container for collected dataset snapshots."""
 
     blocks: list[tuple[int, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -57,45 +46,15 @@ class DatasetStorage:
 
 
 class CollectorListener(BaseCollectorListener):
-    """In-memory collector listener (default implementation).
-
-    Orchestrates data collection from DataRegistry using Observable signals,
-    storing all data in memory using efficient block storage.
-    This is the default implementation
-
-    Usage:
-        # Basic - auto-collect via observable
-        listener = CollectorListener(model)
-
-        # Custom intervals per dataset
-        listener = CollectorListener(
-            model,
-            config={
-                "wealth": {"interval": 1},      # Every time
-                "positions": {"interval": 10},   # Every 10 time units
-                "summary": {"interval": 1, "start": 100} # Every time unit starting from time=100
-            }
-        )
-
-        # Access data after simulation
-        wealth_df = listener.get_table_dataframe("wealth")
-        all_data = listener.get_all_dataframes()
-    """
+    """In-memory collector listener (default implementation)."""
 
     def __init__(
         self,
         model: Model,
-        config: dict[str, dict[str, Any]] | None = None,
+        config: dict[str, DatasetConfig | dict[str, Any]] | None = None,
     ):
-        """Initialize the listener and subscribe to model observables.
-
-        Args:
-            model: Mesa model instance with data_registry attribute
-            config: Per-dataset configuration {name: {interval, start}}
-        """
-        self.storage: dict[
-            str, DatasetStorage
-        ] = {}  # IMPORTANT: Call before super().init() to setup storage
+        """Initialize the listener and subscribe to model observables."""
+        self.storage: dict[str, DatasetStorage] = {}
         super().__init__(model, config)
 
     def _initialize_dataset_storage(self, dataset_name: str, dataset: Any) -> None:
@@ -145,7 +104,6 @@ class CollectorListener(BaseCollectorListener):
 
             # Single dict (ModelDataSet)
             case dict():
-                # Add time directly to dict
                 row = {**data, "time": time}
                 storage.blocks.append(row)
                 storage.total_rows += 1
@@ -171,11 +129,7 @@ class CollectorListener(BaseCollectorListener):
         storage.estimated_size_bytes += added_bytes
 
     def clear(self, dataset_name: str | None = None) -> None:
-        """Clear stored data.
-
-        Args:
-            dataset_name: Specific dataset to clear, or None for all
-        """
+        """Clear stored data."""
         if dataset_name is None:
             for storage in self.storage.values():
                 storage.blocks.clear()
@@ -191,17 +145,7 @@ class CollectorListener(BaseCollectorListener):
             storage.estimated_size_bytes = 0
 
     def get_table_dataframe(self, name: str) -> pd.DataFrame:
-        """Convert stored data to pandas DataFrame.
-
-        Args:
-            name: Dataset name
-
-        Returns:
-            pandas DataFrame with all collected data
-
-        Raises:
-            KeyError: If dataset doesn't exist
-        """
+        """Convert stored data to pandas DataFrame."""
         if name not in self.storage:
             raise KeyError(f"Dataset '{name}' not found")
 
@@ -232,21 +176,21 @@ class CollectorListener(BaseCollectorListener):
                 return pd.DataFrame(storage.blocks)
 
     def _convert_numpyAgentDataSet(self, storage: DatasetStorage) -> pd.DataFrame:
-        """Convert numpy array blocks to DataFrame."""
+        """Convert numpy array blocks to DataFrame using np.vstack."""
         columns = storage.metadata.get("columns", [])
-
-        # Build list of DataFrames
-        dfs = []
-        for time, array in storage.blocks:
-            df = pd.DataFrame(array, columns=columns)
-            df["time"] = time
-            dfs.append(df)
-
-        if not dfs:
+        if not storage.blocks:
             return pd.DataFrame(columns=[*columns, "time"])
 
-        # Concatenate efficiently
-        return pd.concat(dfs, ignore_index=True)
+        arrays = []
+        times = []
+        for time, array in storage.blocks:
+            arrays.append(array)
+            times.extend([time] * len(array))
+
+        combined_array = np.vstack(arrays)
+        df = pd.DataFrame(combined_array, columns=columns)
+        df["time"] = times
+        return df
 
     def _convert_agentDataSet(self, storage: DatasetStorage) -> pd.DataFrame:
         """Convert list-of-dicts blocks to DataFrame."""
@@ -292,11 +236,7 @@ class CollectorListener(BaseCollectorListener):
         return total_bytes / (1024 * 1024)
 
     def summary(self) -> dict[str, Any]:
-        """Get collection status summary.
-
-        Returns:
-            Dictionary with summary statistics
-        """
+        """Get collection status summary."""
         return {
             "datasets": len(self.storage),
             "total_rows": sum(s.total_rows for s in self.storage.values()),

@@ -10,8 +10,9 @@ when they occupy the same cell.
 from mesa import Model
 from mesa.discrete_space import OrthogonalMooreGrid
 from mesa.examples.basic.boltzmann_wealth_model.agents import MoneyAgent
+from mesa.experimental.data_collection import DataRegistry
 from mesa.experimental.listeners import CollectorListener
-from mesa.experimental.statistics import DataRegistry
+from mesa.experimental.listeners.baseCollectorListener import DatasetConfig
 
 
 class BoltzmannWealth(Model):
@@ -45,7 +46,8 @@ class BoltzmannWealth(Model):
         self.data_registry = DataRegistry()
         self.data_registry.track_agents(
             self.agents,
-            "agents_datawealth",
+            "agents_wealth",
+            "wealth",
         )
         self.data_registry.track_model(self, "model_data", "gini")
         MoneyAgent.create_agents(
@@ -55,7 +57,11 @@ class BoltzmannWealth(Model):
         )
 
         self.running = True
-        self.listener = CollectorListener(self)
+        config = {
+            "agents_wealth": DatasetConfig(interval=1, start=0),
+            "model_data": DatasetConfig(interval=1, start=0),
+        }
+        self.listener = CollectorListener(self, config=config)
 
     def step(self):
         self.agents.shuffle_do("step")  # Activate all agents in random order

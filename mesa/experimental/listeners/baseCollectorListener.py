@@ -19,6 +19,8 @@ Key Design Principles:
     3. Observable-based collection
 """
 
+import contextlib
+import copy
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -28,7 +30,6 @@ import pandas as pd
 
 from mesa import Model
 from mesa.experimental.mesa_signals import HasObservables, SignalType
-from mesa.experimental.statistics import TableDataSet
 
 
 @dataclass
@@ -42,109 +43,80 @@ class DatasetConfig:
         _next_collection: next scheduled collection time
     """
 
-    interval: int = 1
-    start: int = 0
+    interval: int | float = 1
+    start: int | float = 0
     enabled: bool = True
-    _next_collection: int = 0
+    _next_collection: int | float = 0
 
     def __post_init__(self):
         """Validate configuration."""
-        if self.interval < 1:
-            raise ValueError(f"interval must be >= 1, got {self.interval}")
+        if self.interval <= 0:
+            raise ValueError(f"interval must be > 0, got {self.interval}")
         if self.start < 0:
             raise ValueError(f"start must be >= 0, got {self.start}")
         self._next_collection = self.start
 
 
 class BaseCollectorListener(ABC):
-    """Abstract base class for data collection listeners.
-
-    This class defines the interface that all collector listeners must implement,
-    enabling custom storage backends (SQL, Parquet, HDF5, etc.) while reusing
-    the signal handling and collection orchestration logic.
-    """
+    """Base class for data collection listeners."""
 
     def __init__(
         self,
         model: Model,
-        config: dict[str, dict[str, Any]] | None = None,
+        config: dict[str, DatasetConfig | dict[str, Any]] | None = None,
     ):
-        """Initialize the listener and subscribe to model observables.
+        """Initialize the listener.
 
         Args:
-            model: Mesa model instance with data_registry attribute
-            config: Per-dataset configuration {name: {interval, start}}
-
-        Raises:
-            AttributeError: If model.data_registry not found
-            TypeError: If data_registry doesn't have datasets attribute
+            model: The model to observe.
+            config: Config mapping dataset names to configuration.
+                    Values can be dicts or DatasetConfig objects.
         """
         self.model = model
+        self.registry = getattr(model, "data_registry", None)
 
-        # Validate DataRegistry exists
-        if not hasattr(model, "data_registry"):
-            raise AttributeError(
-                "CollectorListener requires 'model.data_registry'. "
-                "Create DataRegistry() before initializing listener."
-            )
+        if self.registry is None:
+            raise AttributeError("Model must have a DataRegistry (model.data_registry)")
 
-        if not hasattr(model.data_registry, "datasets"):
-            raise TypeError(
-                "model.data_registry must have 'datasets' attribute. "
-                "Ensure you're using a compatible DataRegistry."
-            )
-
-        self.registry = model.data_registry
-
-        # Dataset configurations managed by base class
+        # Parse configuration
         self.configs: dict[str, DatasetConfig] = {}
 
-        # Initialize storage and configs for all datasets in registry
-        self._initialize_datasets(config or {})
+        # Load defaults from registry
+        for name in self.registry.datasets:
+            self.configs[name] = DatasetConfig()
 
-        # Subscribe to model time units observable
-        self._subscribe_to_time()
+        # Override with user config
+        if config:
+            for name, user_cfg in config.items():
+                if name not in self.configs:
+                    warnings.warn(
+                        f"Config for unknown dataset '{name}' ignored.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    continue
 
-    def _initialize_datasets(self, user_config: dict[str, dict[str, Any]]) -> None:
-        """Initialize dataset configurations and call subclass initialization.
+                if isinstance(user_cfg, DatasetConfig):
+                    # Copy to ensure unique state
+                    self.configs[name] = copy.copy(user_cfg)
+                    # Note: __post_init__ was already called when user created the object
+                else:
+                    # Update default dataclass fields from dict
+                    current = self.configs[name]
+                    for key, value in user_cfg.items():
+                        if hasattr(current, key):
+                            setattr(current, key, value)
+                    # Re-validate
+                    current.__post_init__()
 
-        This method is called during __init__ to set up configurations and
-        delegate storage initialization to subclasses.
-        """
-        for dataset_name, dataset in self.registry.datasets.items():
-            # SKIP TableDataSet: They manage their own history
-            if isinstance(dataset, TableDataSet):
-                continue
+        # Initialize storage for each dataset
+        for name, dataset in self.registry.datasets.items():
+            self._initialize_dataset_storage(name, dataset)
 
-            # Merge user config with defaults
-            dataset_config = user_config.get(dataset_name, {})
-            config = DatasetConfig(**dataset_config)
-            self.configs[dataset_name] = config
+        self._subscribe_to_model()
 
-            # Let subclass initialize its storage backend
-            self._initialize_dataset_storage(dataset_name, dataset)
-
-    @abstractmethod
-    def _initialize_dataset_storage(self, dataset_name: str, dataset: Any) -> None:
-        """Initialize storage for a specific dataset.
-
-        Called once per dataset during initialization. Subclasses should
-        set up their storage backend here (e.g., create tables, open files).
-
-        Args:
-            dataset_name: Name of the dataset
-            dataset: The dataset object from the registry
-        """
-
-    def _subscribe_to_time(self) -> None:
-        """Subscribe to model.time observable for automatic collection.
-
-        This subscribes to the 'time' observable on the model. When time
-        changes (after each time completes), our handler is called and we
-        check if any datasets are due for collection.
-
-        Falls back gracefully if model doesn't have observables.
-        """
+    def _subscribe_to_model(self) -> None:
+        """Subscribe to model.time for automatic collection."""
         if isinstance(self.model, HasObservables):
             # Subscribe to time units observable
             self.model.observe("time", SignalType.CHANGE, self._on_time_change)
@@ -158,58 +130,36 @@ class BaseCollectorListener(ABC):
             )
 
     def _on_time_change(self, signal) -> None:
-        """Handle time change signal.
-
-        Called automatically when model.times changes.
-        Checks intervals and collects data for due datasets.
-
-        Args:
-            signal: The signal object from Observable
-        """
+        """Handle time change signal."""
         current_time = signal.new
 
         for name, config in self.configs.items():
-            # Exit early if not due
-            if not config.enabled:
-                continue
-            if current_time < config._next_collection:
+            if not config.enabled or current_time < config._next_collection:
                 continue
 
-            # Extract data from registry and store
             try:
                 dataset = self.registry.datasets[name]
                 data_snapshot = dataset.data
 
-                # Delegate storage to subclass
                 self._store_dataset_snapshot(name, current_time, data_snapshot)
-
-                # Update next collection time
                 config._next_collection = current_time + config.interval
 
             except Exception as e:
                 warnings.warn(
                     f"Collection failed: dataset='{name}', time={current_time}: {e}",
-                    RuntimeError,
+                    RuntimeWarning,
                     stacklevel=2,
                 )
+
+    @abstractmethod
+    def _initialize_dataset_storage(self, dataset_name: str, dataset: Any) -> None:
+        """Initialize storage for a specific dataset."""
 
     @abstractmethod
     def _store_dataset_snapshot(
         self, dataset_name: str, time: int | float, data: Any
     ) -> None:
-        """Store a single dataset snapshot.
-
-        This is the core storage method that subclasses must implement.
-        Called automatically during collection when a dataset is due.
-
-        Args:
-            dataset_name: Name of the dataset being stored
-            time: Current simulation time
-            data: The data snapshot from the dataset
-                  - np.ndarray for NumpyAgentDataSet
-                  - list[dict] for AgentDataSet
-                  - dict for ModelDataSet
-        """
+        """Store a single snapshot of data."""
 
     def collect(self) -> None:
         """Manually trigger collection (for manual mode or testing).
@@ -222,14 +172,14 @@ class BaseCollectorListener(ABC):
         for name, config in self.configs.items():
             if not config.enabled:
                 continue
-            if current_time < config._next_collection:
-                continue
 
             try:
                 dataset = self.registry.datasets[name]
                 data_snapshot = dataset.data
                 self._store_dataset_snapshot(name, current_time, data_snapshot)
-                config._next_collection = current_time + config.interval
+                # Note: We do NOT update _next_collection here. Manual collection
+                # is treated as an "extra" snapshot that shouldn't disrupt the
+                # regular interval rhythm.
             except Exception as e:
                 warnings.warn(
                     f"Collection failed: dataset='{name}', time={current_time}: {e}",
@@ -239,11 +189,7 @@ class BaseCollectorListener(ABC):
 
     @abstractmethod
     def clear(self, dataset_name: str | None = None) -> None:
-        """Clear stored data.
-
-        Args:
-            dataset_name: Specific dataset to clear, or None for all
-        """
+        """Clear stored data."""
 
     def enable_dataset(self, dataset_name: str) -> None:
         """Enable collection for a dataset."""
@@ -259,36 +205,18 @@ class BaseCollectorListener(ABC):
 
     @abstractmethod
     def get_table_dataframe(self, name: str) -> pd.DataFrame:
-        """Convert stored data to pandas DataFrame.
-
-        Args:
-            name: Dataset name
-
-        Returns:
-            pandas DataFrame with all collected data
-
-        Raises:
-            KeyError: If dataset doesn't exist
-        """
+        """Convert stored data to pandas DataFrame."""
 
     def get_all_dataframes(self) -> dict[str, pd.DataFrame]:
-        """Get DataFrames for all datasets.
-
-        Returns:
-            Dictionary mapping dataset names to DataFrames
-        """
+        """Get DataFrames for all datasets."""
         return {name: self.get_table_dataframe(name) for name in self.configs}
 
     @abstractmethod
     def summary(self) -> dict[str, Any]:
-        """Get collection status summary.
-
-        Returns:
-            Dictionary with summary statistics
-        """
+        """Get collection status summary."""
 
     def __del__(self):
         """Cleanup when listener is destroyed."""
-        # Unsubscribe from observable
         if isinstance(self.model, HasObservables):
-            self.model.unobserve("time", SignalType.CHANGE, self._on_time_change)
+            with contextlib.suppress(ValueError, KeyError):
+                self.model.unobserve("time", SignalType.CHANGE, self._on_time_change)

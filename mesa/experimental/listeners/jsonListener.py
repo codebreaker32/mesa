@@ -1,8 +1,4 @@
-"""Example: JSON-based storage backend for CollectorListener.
-
-This demonstrates how to create a custom storage backend
-by subclassing BaseCollectorListener.
-"""
+"""Example: JSON-based storage backend for CollectorListener."""
 
 import json
 import pathlib
@@ -11,31 +7,48 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .baseCollectorListener import BaseCollectorListener
+from .baseCollectorListener import BaseCollectorListener, DatasetConfig
+
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """JSON Encoder that handles Numpy types."""
+
+    def default(self, obj):
+        """Convert Numpy types to native Python types."""
+        if isinstance(
+            obj,
+            (
+                np.int_,
+                np.intc,
+                np.intp,
+                np.int8,
+                np.int16,
+                np.int32,
+                np.int64,
+                np.uint8,
+                np.uint16,
+                np.uint32,
+                np.uint64,
+            ),
+        ):
+            return int(obj)
+        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, (np.bool_)):
+            return bool(obj)
+        elif isinstance(obj, (np.ndarray,)):
+            return obj.tolist()
+        return super().default(obj)
 
 
 class JSONListener(BaseCollectorListener):
-    """Minimal example: Store data as JSON files.
-
-    Usage:
-        model = WealthModel(n_agents=20)
-        listener = JSONListener(model, output_dir="json_results/")
-
-        # Run simulation
-        for _ in range(50):
-            model.step()
-
-        # Save to JSON files
-        listener.save_to_json()
-
-        print(listener.summary())
-
-        # Get as DataFrame
-        wealth_df = listener.get_table_dataframe("wealth")
-    """
+    """Store data as JSON files."""
 
     def __init__(
-        self, model, config: dict[str, dict[str, Any]] | None = None, output_dir="."
+        self,
+        model,
+        config: dict[str, DatasetConfig | dict[str, Any]] | None = None,
+        output_dir=".",
     ):
         """Initialize JSON Listener."""
         self.output_dir = pathlib.Path(output_dir)
@@ -52,18 +65,20 @@ class JSONListener(BaseCollectorListener):
     ) -> None:
         """Store snapshot as dict."""
         match data:
+            case dict():
+                self.data[dataset_name].append({"time": time, "data": data})
+            case list():
+                self.data[dataset_name].append({"time": time, "data": data})
             case np.ndarray():
                 self.data[dataset_name].append({"time": time, "data": data.tolist()})
-            case list() | dict():
+            case _:
                 self.data[dataset_name].append({"time": time, "data": data})
 
     def get_table_dataframe(self, name: str) -> pd.DataFrame:
-        """Convert JSON data to DataFrame."""
+        """Convert stored JSON-like data to DataFrame."""
         if name not in self.data:
             raise KeyError(f"Dataset '{name}' not found")
 
-        # Simple conversion
-        # FIXME Make it smarter
         records = []
         for snapshot in self.data[name]:
             time = snapshot["time"]
@@ -73,6 +88,9 @@ class JSONListener(BaseCollectorListener):
                     records.append({**row, "time": time})
             elif isinstance(data, dict):
                 records.append({**data, "time": time})
+            else:
+                # Handle scalar or simple list
+                records.append({"time": time, "value": data})
 
         return pd.DataFrame(records) if records else pd.DataFrame()
 
@@ -103,4 +121,4 @@ class JSONListener(BaseCollectorListener):
         for name, snapshots in self.data.items():
             filepath = self.output_dir / f"{name}.json"
             with open(filepath, "w") as f:
-                json.dump(snapshots, f, indent=2)
+                json.dump(snapshots, f, indent=2, cls=NumpyJSONEncoder)
