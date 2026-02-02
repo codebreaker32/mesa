@@ -15,6 +15,7 @@ Architecture:
 from __future__ import annotations
 
 import warnings
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -37,9 +38,9 @@ except ImportError:
 
 @dataclass
 class DatasetStorage:
-    """Storage container for collected dataset snapshots."""
+    """Storage container with sliding window support."""
 
-    blocks: list[tuple[int, Any]] = field(default_factory=list)
+    blocks: deque = field(default_factory=deque)
     metadata: dict[str, Any] = field(default_factory=dict)
     total_rows: int = 0
     estimated_size_bytes: int = 0
@@ -58,66 +59,70 @@ class CollectorListener(BaseCollectorListener):
         super().__init__(model, config)
 
     def _initialize_dataset_storage(self, dataset_name: str, dataset: Any) -> None:
-        """Initialize in-memory storage for a dataset."""
-        self.storage[dataset_name] = DatasetStorage(metadata={"initialized": True})
+        """Initialize storage with deque for efficient windowing."""
+        config = self.configs[dataset_name]
+        maxlen = config.window_size if config.window_size else None
+
+        self.storage[dataset_name] = DatasetStorage(
+            blocks=deque(maxlen=maxlen), metadata={"initialized": True}
+        )
 
     def _store_dataset_snapshot(
         self, dataset_name: str, time: int | float, data: Any
     ) -> None:
-        """Store data snapshot in memory based on type."""
+        """Store data snapshot with automatic window management."""
         storage = self.storage[dataset_name]
+        config = self.configs[dataset_name]
+
+        # Track old data if we're about to evict
+        old_data = None
+        if config.window_size and len(storage.blocks) >= config.window_size:
+            _old_time, old_data = storage.blocks[0]
+
+        # Store new data
         added_bytes = 0
 
         match data:
-            # Numpy array (NumpyAgentDataSet)
             case np.ndarray() if data.size > 0:
-                # CRITICAL: Copy to prevent mutation
                 data_copy = data.copy()
                 storage.blocks.append((time, data_copy))
                 storage.total_rows += len(data_copy)
                 added_bytes = data_copy.nbytes
 
-                # Store metadata on first collection
                 if "type" not in storage.metadata:
                     storage.metadata["type"] = "numpyagentdataset"
                     storage.metadata["dtype"] = data.dtype
-                    # Try to get column names from dataset
                     try:
                         dataset = self.registry.datasets[dataset_name]
                         storage.metadata["columns"] = list(dataset._attributes)
                     except (AttributeError, KeyError):
-                        # Fallback to generic names
                         n_cols = data.shape[1] if data.ndim > 1 else 1
                         storage.metadata["columns"] = [
                             f"col_{i}" for i in range(n_cols)
                         ]
 
-            # List of dicts (AgentDataSet)
             case list() if data:
                 storage.blocks.append((time, data))
                 storage.total_rows += len(data)
-                added_bytes = len(data) * 100  # Estimate
+                added_bytes = len(data) * 100
 
                 if "type" not in storage.metadata:
                     storage.metadata["type"] = "agentdataset"
                     storage.metadata["columns"] = list(data[0].keys())
 
-            # Single dict (ModelDataSet)
             case dict():
                 row = {**data, "time": time}
                 storage.blocks.append(row)
                 storage.total_rows += 1
-                added_bytes = 100  # Estimate
+                added_bytes = 100
 
                 if "type" not in storage.metadata:
                     storage.metadata["type"] = "modeldataset"
                     storage.metadata["columns"] = [*list(data.keys()), "time"]
 
-            # Handle empty containers explicitly to prevent falling through to fallback
             case np.ndarray() | list():
-                pass
+                pass  # Empty
 
-            # Fallback for custom types
             case _:
                 storage.blocks.append((time, data))
                 storage.total_rows += 1
@@ -125,6 +130,22 @@ class CollectorListener(BaseCollectorListener):
 
                 if "type" not in storage.metadata:
                     storage.metadata["type"] = "custom"
+
+        # Update bookkeeping for evicted data
+        if old_data is not None:
+            match old_data:
+                case np.ndarray():
+                    storage.total_rows -= len(old_data)
+                    storage.estimated_size_bytes -= old_data.nbytes
+                case list():
+                    storage.total_rows -= len(old_data)
+                    storage.estimated_size_bytes -= len(old_data) * 100
+                case dict():
+                    storage.total_rows -= 1
+                    storage.estimated_size_bytes -= 100
+                case _:
+                    storage.total_rows -= 1
+                    storage.estimated_size_bytes -= 100
 
         storage.estimated_size_bytes += added_bytes
 
@@ -176,7 +197,7 @@ class CollectorListener(BaseCollectorListener):
                 return pd.DataFrame(storage.blocks)
 
     def _convert_numpyAgentDataSet(self, storage: DatasetStorage) -> pd.DataFrame:
-        """Convert numpy array blocks to DataFrame using np.vstack."""
+        """Convert numpy array blocks to DataFrame."""
         columns = storage.metadata.get("columns", [])
         if not storage.blocks:
             return pd.DataFrame(columns=[*columns, "time"])
