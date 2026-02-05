@@ -12,7 +12,7 @@ from mesa.discrete_space import OrthogonalMooreGrid
 from mesa.examples.basic.boltzmann_wealth_model.agents import MoneyAgent
 from mesa.experimental.data_collection import DataRegistry
 from mesa.experimental.listeners import CollectorListener
-from mesa.experimental.listeners.baseCollectorListener import DatasetConfig
+from mesa.experimental.listeners.base_listener import DatasetConfig
 
 
 class BoltzmannWealth(Model):
