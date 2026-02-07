@@ -5,7 +5,7 @@ functionality:
 
 - BaseObservable: Abstract base class defining the interface for all observables
 - Observable: Main class for creating observable properties that emit change signals
-- computed: Decorator for creating properties that automatically update based on dependencies
+- computed_property: Decorator for creating properties that automatically update based on dependencies
 - HasObservables: Mixin class that enables an object to contain and manage observables
 - All: Helper class for subscribing to all signals from an observable
 - SignalType: Enum defining the types of signals that can be emitted
@@ -132,9 +132,32 @@ class Observable(BaseObservable):
 class ComputedState:
     """Internal class to hold the state of a computed property for a specific instance."""
 
-    __slots__ = ["__weakref__", "func", "is_dirty", "name", "owner", "parents", "value"]
+    __slots__ = [
+        "__weakref__",
+        "func",
+        "is_dirty",
+        "name",
+        "owner",
+        "parents",
+        "static_deps",
+        "value",
+    ]
 
-    def __init__(self, owner: HasObservables, name: str, func: Callable):
+    def __init__(
+        self,
+        owner: HasObservables,
+        name: str,
+        func: Callable,
+        static_dependencies=None,
+    ):
+        """Initialize the ComputedState.
+
+        Args:
+            owner: The instance that owns this computed property.
+            name: The name of the computed property.
+            func: The function to calculate the property's value.
+            static_dependencies: Optional list of dependencies
+        """
         self.owner = owner
         self.name = name
         self.func = func
@@ -143,6 +166,20 @@ class ComputedState:
         self.parents: weakref.WeakKeyDictionary[HasObservables, dict[str, Any]] = (
             weakref.WeakKeyDictionary()
         )
+        self.static_deps: list[tuple[str, SignalType]] = []
+
+        if static_dependencies:
+            for dep_spec in static_dependencies:
+                if isinstance(dep_spec, tuple) and len(dep_spec) >= 2:
+                    obs_name = dep_spec[0]
+                    signal_types = dep_spec[1:]
+                    for signal_type in signal_types:
+                        owner.observe(obs_name, signal_type, self._set_dirty)
+                        self.static_deps.append((obs_name, signal_type))
+                elif isinstance(dep_spec, tuple) and len(dep_spec) == 1:
+                    obs_name = dep_spec[0]
+                    owner.observe(obs_name, ALL, self._set_dirty)
+                    self.static_deps.append((obs_name, ALL))
 
     def _set_dirty(self, signal):
         if not self.is_dirty:
@@ -181,64 +218,95 @@ class ComputedProperty(property):
     signal_types = ObservableSignals
 
 
-def computed_property(func: Callable) -> property:
+def computed_property(func=None, *, dependencies=None):
     """Decorator to create a computed property.
 
     Acts like @property, but automatically tracks dependencies (Observables)
     accessed during the function execution.
     """
-    key = f"_computed_{func.__name__}"
 
-    @functools.wraps(func)
-    def wrapper(self: HasObservables):
-        global CURRENT_COMPUTED  # noqa: PLW0603
+    def decorator(computation_func):
+        key = f"_computed_{computation_func.__name__}"
 
-        if not hasattr(self, key):
-            state = ComputedState(self, func.__name__, func)
-            setattr(self, key, state)
-        else:
-            state = getattr(self, key)
-
-        if state.is_dirty:
-            changed = False
-
-            # Check if parents actually changed
-            if not state.parents:
-                changed = True
+        # Normalize dependencies to list of tuples
+        if dependencies is not None:
+            if isinstance(dependencies, tuple) and len(dependencies) > 0:
+                if isinstance(dependencies[0], str):
+                    # Single dependency: ("agents", ALL) or ("agents", Sig1, Sig2)
+                    deps = [dependencies]
+                else:
+                    raise ValueError(
+                        "Invalid dependencies format. Expected a tuple of (observable_name, signal_type) or a list of such tuples."
+                    )
+            elif isinstance(dependencies, list):
+                # Multiple dependencies: [(...), (...)]
+                deps = dependencies
             else:
-                for parent, observations in state.parents.items():
-                    if parent is None:
-                        changed = True
-                        break
-                    for attr, old_val in observations.items():
-                        current_val = getattr(parent, attr)
-                        if current_val != old_val:
+                deps = None
+        else:
+            deps = None
+
+        @functools.wraps(computation_func)
+        def wrapper(self: HasObservables):
+            global CURRENT_COMPUTED  # noqa: PLW0603
+
+            if not hasattr(self, key):
+                state = ComputedState(
+                    self, computation_func.__name__, computation_func, deps
+                )
+                setattr(self, key, state)
+            else:
+                state = getattr(self, key)
+
+            if state.is_dirty:
+                changed = False
+
+                # Check if parents actually changed
+                if not state.parents:
+                    changed = True
+                else:
+                    for parent, observations in state.parents.items():
+                        if parent is None:
                             changed = True
                             break
-                    if changed:
-                        break
+                        for attr, old_val in observations.items():
+                            current_val = getattr(parent, attr)
+                            if current_val != old_val:
+                                changed = True
+                                break
+                        if changed:
+                            break
 
-            if changed:
-                state._remove_parents()
+                if changed:
+                    state._remove_parents()
 
-                old = CURRENT_COMPUTED
-                CURRENT_COMPUTED = state
+                    old = CURRENT_COMPUTED
+                    CURRENT_COMPUTED = state
+                    try:
+                        state.value = computation_func(self)
+                    except Exception as e:
+                        raise e
+                    finally:
+                        CURRENT_COMPUTED = old
 
-                try:
-                    state.value = func(self)
-                except Exception as e:
-                    raise e
-                finally:
-                    CURRENT_COMPUTED = old
+                state.is_dirty = False
 
-            state.is_dirty = False
+            if CURRENT_COMPUTED is not None:
+                CURRENT_COMPUTED._add_parent(
+                    self, computation_func.__name__, state.value
+                )
 
-        if CURRENT_COMPUTED is not None:
-            CURRENT_COMPUTED._add_parent(self, func.__name__, state.value)
+            return state.value
 
-        return state.value
+        return ComputedProperty(wrapper)
 
-    return ComputedProperty(wrapper)
+    # Support both @computed_property and @computed_property(dependencies=...)
+    if func is None:
+        # Called with arguments: @computed_property(dependencies=...)
+        return decorator
+    else:
+        # Called without arguments: @computed_property
+        return decorator(func)
 
 
 class HasObservables:
