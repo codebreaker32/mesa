@@ -16,6 +16,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from mesa.experimental.mesa_signals import (
+    HasObservables,
+    ModelSignals,
+    Observable,
+    emit,
+)
+
 if TYPE_CHECKING:
     from mesa.experimental.devs import Simulator
 
@@ -61,8 +68,10 @@ class Model[A: Agent, S: Scenario](HasObservables):
 
     """
 
-    steps = Observable(fallback_value=0)
-    time = Observable(fallback_value=0.0)
+    # fixme how can we declare that "agents" is observable?
+    time = (
+        Observable()
+    )  # we can now just subscribe to change events on the observable time
 
     @property
     def scenario(self) -> S:
@@ -281,6 +290,7 @@ class Model[A: Agent, S: Scenario](HasObservables):
         """
         return self._agents_by_type
 
+    @emit("agents", ModelSignals.AGENT_ADDED)
     def register_agent(self, agent: A):
         """Register the agent with the model.
 
@@ -311,6 +321,7 @@ class Model[A: Agent, S: Scenario](HasObservables):
             f"registered {agent.__class__.__name__} with agent_id {agent.unique_id}"
         )
 
+    @emit("agents", ModelSignals.AGENT_REMOVED)
     def deregister_agent(self, agent: A):
         """Deregister the agent with the model.
 
