@@ -82,7 +82,13 @@ class DataRecorder(BaseDataRecorder):
         match data:
             case np.ndarray():
                 if data.size > 0:
-                    data_copy = data.copy()
+                    ids = None
+                    dataset = self.registry.datasets[dataset_name]
+                    ids = getattr(dataset, "agent_ids", None)
+                    ids_col = ids.reshape(-1, 1)
+                    data_to_store = np.hstack([ids_col, data])
+
+                    data_copy = data_to_store.copy()
                     storage.blocks.append((time, data_copy))
                     storage.total_rows += len(data_copy)
                     added_bytes = data_copy.nbytes
@@ -90,15 +96,8 @@ class DataRecorder(BaseDataRecorder):
                     if "type" not in storage.metadata:
                         storage.metadata["type"] = "numpyagentdataset"
                         storage.metadata["dtype"] = data.dtype
-                        try:
-                            dataset = self.registry.datasets[dataset_name]
-                        except (AttributeError, KeyError):
-                            n_cols = data.shape[1] if data.ndim > 1 else 1
-                            storage.metadata["columns"] = [
-                                f"col_{i}" for i in range(n_cols)
-                            ]
-                        else:
-                            storage.metadata["columns"] = list(dataset._attributes)
+                        dataset = self.registry.datasets[dataset_name]
+                        storage.metadata["columns"] = list(dataset._attributes)
 
             case list():
                 if data:
@@ -197,7 +196,8 @@ class DataRecorder(BaseDataRecorder):
         """Convert numpy array blocks to DataFrame."""
         columns = storage.metadata.get("columns", [])
         if not storage.blocks:
-            return pd.DataFrame(columns=[*columns, "time"])
+            final_cols = ["agent_id", *columns, "time"]
+            return pd.DataFrame(columns=final_cols)
 
         arrays = []
         times = []
@@ -409,15 +409,16 @@ class ParquetDataRecorder(BaseDataRecorder):
 
         match data:
             case np.ndarray() if data.size > 0:
-                # Convert numpy to records
-                try:
-                    dataset = self.registry.datasets[dataset_name]
-                    columns = list(dataset._attributes)
-                except (AttributeError, KeyError):
-                    n_cols = data.shape[1] if data.ndim > 1 else 1
-                    columns = [f"col_{i}" for i in range(n_cols)]
+                dataset = self.registry.datasets[dataset_name]
+                columns = list(dataset._attributes)
+                ids = dataset.agent_ids
 
-                df = pd.DataFrame(data, columns=columns)
+                data_to_store = data
+                ids_col = ids.reshape(-1, 1)
+                data_to_store = np.hstack([ids_col, data])
+                columns = ["agent_id", *columns]
+
+                df = pd.DataFrame(data_to_store, columns=columns)
                 df["time"] = time
                 buffer.extend(df.to_dict("records"))
 
@@ -554,12 +555,15 @@ class SQLDataRecorder(BaseDataRecorder):
 
     def _store_numpy_data(self, dataset_name: str, time: int | float, data: np.ndarray):
         """Store numpy array as SQL records."""
-        try:
-            dataset = self.registry.datasets[dataset_name]
-            columns = [col for col in dataset._attributes if col != "time"]
-        except (AttributeError, KeyError):
-            n_cols = data.shape[1] if data.ndim > 1 else 1
-            columns = [f"col_{i}" for i in range(n_cols)]
+        dataset = self.registry.datasets[dataset_name]
+        columns = [col for col in dataset._attributes if col != "time"]
+
+        # Check for IDs
+        if dataset is not None:
+            ids = dataset.agent_ids
+            ids_col = ids.reshape(-1, 1)
+            data = np.hstack([ids_col, data])
+            columns = ["agent_id", *columns]
 
         if not self.metadata[dataset_name]["table_created"]:
             col_defs = ", ".join([f'"{col}" REAL' for col in columns])
@@ -569,14 +573,7 @@ class SQLDataRecorder(BaseDataRecorder):
             self.metadata[dataset_name]["table_created"] = True
             self.metadata[dataset_name]["columns"] = columns
 
-        if data.shape[1] > len(columns):
-            all_cols = list(self.registry.datasets[dataset_name]._attributes)
-            df = pd.DataFrame(data, columns=all_cols)
-            if "time" in df.columns:
-                df = df.drop(columns=["time"])
-        else:
-            df = pd.DataFrame(data, columns=columns)
-
+        df = pd.DataFrame(data, columns=columns)
         df["time"] = time
         df.to_sql(dataset_name, self.conn, if_exists="append", index=False)
 

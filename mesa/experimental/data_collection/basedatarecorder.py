@@ -19,15 +19,19 @@ Key Design Principles:
     3. Observable-based collection
 """
 
+from __future__ import annotations
+
 import copy
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from mesa import Model
 from mesa.experimental.mesa_signals import ObservableSignals
+
+if TYPE_CHECKING:
+    from mesa import Model
 
 
 @dataclass
