@@ -206,7 +206,8 @@ class DataRecorder(BaseDataRecorder):
             times.extend([time] * len(array))
 
         combined_array = np.vstack(arrays)
-        df = pd.DataFrame(combined_array, columns=columns)
+        df_cols = ["agent_id", *columns]
+        df = pd.DataFrame(combined_array, columns=df_cols)
         df["time"] = times
         return df
 
