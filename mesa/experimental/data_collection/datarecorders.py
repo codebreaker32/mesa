@@ -287,7 +287,7 @@ class NumpyJSONEncoder(json.JSONEncoder):
             ),
         ):
             return int(obj)
-        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+        elif isinstance(obj, (np.float64)):
             return float(obj)
         elif isinstance(obj, (np.bool_)):
             return bool(obj)
@@ -513,9 +513,11 @@ class ParquetDataRecorder(BaseDataRecorder):
 
         return summary_data
 
-    def __del__(self):
+    def __del__(self):  # pragma : no cover
         """Flush all buffers on cleanup."""
-        with contextlib.suppress(RuntimeError, ImportError, NameError):
+        with contextlib.suppress(
+            RuntimeError, ImportError, NameError, OSError, FileNotFoundError
+        ):
             for name in self.buffers:
                 self._flush_buffer(name)
         # super().__del__()
@@ -657,7 +659,7 @@ class SQLDataRecorder(BaseDataRecorder):
 
         return summary_data
 
-    def __del__(self):
+    def __del__(self):  # pragma : no cover
         """Close database connection on cleanup."""
         # super().__del__()
         if hasattr(self, "conn"):

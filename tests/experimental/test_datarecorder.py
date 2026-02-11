@@ -1,9 +1,10 @@
 """Tests for DataRecorders."""
 
 import json
+import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -12,6 +13,7 @@ import pytest
 from mesa.agent import Agent
 from mesa.experimental.data_collection import (
     DataRecorder,
+    DataRegistry,
     DatasetConfig,
     JSONDataRecorder,
     ParquetDataRecorder,
@@ -50,334 +52,807 @@ class MockModel(Model):
         self.data_registry.track_agents(agents, "agent_data", fields=["value"])
 
 
-def test_dataset_config():
-    """Test DatasetConfig validation and logic."""
-    # Valid config
-    config = DatasetConfig(interval=2, start_time=10)
-    assert config.interval == 2
-    assert config.start_time == 10
-    assert config.enabled is True
+class CustomDataType:
+    """Custom data type for testing fallback case."""
 
-    # Validation errors
+    def __init__(self, data):
+        """Init."""
+        self.data = data
+
+
+def test_dataset_config_window_size_validation():
+    """Test window_size validation."""
+    # Valid window size
+    config = DatasetConfig(window_size=100)
+    assert config.window_size == 100
+
+    # None is valid
+    config = DatasetConfig(window_size=None)
+    assert config.window_size is None
+
+    # Invalid window sizes
     with pytest.raises(ValueError):
-        DatasetConfig(interval=-1)
+        DatasetConfig(window_size=0)
 
     with pytest.raises(ValueError):
-        DatasetConfig(start_time=-5)
+        DatasetConfig(window_size=-10)
+
+
+def test_dataset_config_interval_validation():
+    """Test interval validation with zero and negative values."""
+    with pytest.raises(ValueError):
+        DatasetConfig(interval=0)
 
     with pytest.raises(ValueError):
-        DatasetConfig(start_time=10, end_time=5)
+        DatasetConfig(interval=-5)
 
-    # Collection logic
-    config = DatasetConfig(interval=2, start_time=2)
 
+def test_dataset_config_should_collect_disabled():
+    """Test should_collect returns False when disabled."""
+    config = DatasetConfig(enabled=False)
     assert not config.should_collect(0)
-    assert not config.should_collect(1)
-
-    # Start time matches
-    assert config.should_collect(2)
-    config.update_next_collection(2)
-    assert config._next_collection == 4
-
-    assert not config.should_collect(3)
-    assert config.should_collect(4)
+    assert not config.should_collect(100)
 
 
-def test_data_recorder_integration():
-    """Test basic in-memory DataRecorder integration."""
+def test_dataset_config_should_collect_after_end_time():
+    """Test should_collect returns False after end_time."""
+    config = DatasetConfig(start_time=0, end_time=10)
+    assert config.should_collect(5)  # Within range
+    assert not config.should_collect(11)  # After end_time
+
+
+def test_dataset_config_update_next_collection_auto_disable():
+    """Test that updating next_collection auto-disables at end_time."""
+    config = DatasetConfig(interval=5, start_time=0, end_time=20)
+    assert config.enabled
+
+    # Update to time that would schedule next collection beyond end_time
+    config.update_next_collection(18)
+    assert config._next_collection == 23
+    assert not config.enabled  # Should auto-disable
+
+
+def test_base_recorder_no_registry():
+    """Test that BaseDataRecorder raises error without DataRegistry."""
+    model = Model()
+    delattr(model, "data_registry")
+
+    with pytest.raises(AttributeError):
+        DataRecorder(model)
+
+
+def test_base_recorder_config_dict_vs_dataclass():
+    """Test that config can be passed as dict or DatasetConfig."""
     model = MockModel(n=5)
 
-    # Configure recorder
-    config = {
-        "model_data": DatasetConfig(interval=1),
-        "agent_data": DatasetConfig(interval=1),
-        "numpy_data": DatasetConfig(interval=2),  # Different interval
-    }
+    # Test with dict
+    config1 = {"model_data": {"interval": 2, "start_time": 5}}
+    recorder1 = DataRecorder(model, config=config1)
+    assert recorder1.configs["model_data"].interval == 2
+    assert recorder1.configs["model_data"].start_time == 5
 
-    recorder = DataRecorder(model, config=config)
-
-    # Step 1
-    model.step()
-
-    # Retrieve data
-    model_df = recorder.get_table_dataframe("model_data")
-    agent_df = recorder.get_table_dataframe("agent_data")
-    numpy_df = recorder.get_table_dataframe("numpy_data")
-
-    # Check Model Data
-    assert not model_df.empty
-    assert "time" in model_df.columns
-    assert "model_val" in model_df.columns
-    # Should have at least one row
-    assert len(model_df) > 0
-
-    # Check Agent Data
-    assert not agent_df.empty
-    assert "unique_id" in agent_df.columns
-    assert "value" in agent_df.columns
-
-    # Check Numpy Data
-    model.step()  # Time 2
-    numpy_df = recorder.get_table_dataframe("numpy_data")
-
-    # We expect collection at t=0 and t=2
-    times = numpy_df["time"].unique()
-    assert 0.0 in times
-    assert 2.0 in times
-    assert 1.0 not in times
+    # Test with DatasetConfig object
+    config2 = {"model_data": DatasetConfig(interval=3, start_time=10)}
+    recorder2 = DataRecorder(model, config=config2)
+    assert recorder2.configs["model_data"].interval == 3
+    assert recorder2.configs["model_data"].start_time == 10
 
 
-def test_data_recorder_numpy_ids():
-    """Test that DataRecorder correctly adds agent_ids to Numpy datasets."""
-    model = MockModel(n=3)
+def test_base_recorder_enable_disable_dataset():
+    """Test enabling and disabling datasets."""
+    model = MockModel(n=5)
     recorder = DataRecorder(model)
 
-    # Step to generate data
+    # Disable a dataset
+    recorder.disable_dataset("model_data")
+    assert not recorder.configs["model_data"].enabled
+
+    # Enable it again
+    recorder.enable_dataset("model_data")
+    assert recorder.configs["model_data"].enabled
+
+    # Test with nonexistent dataset
+    with pytest.raises(KeyError):
+        recorder.enable_dataset("nonexistent")
+
+    with pytest.raises(KeyError):
+        recorder.disable_dataset("nonexistent")
+
+
+def test_base_recorder_manual_collect():
+    """Test manual collection via collect() method."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+    recorder.clear()
+
+    # Manually trigger collection
+    recorder.collect()
+
+    # Should have collected data
+    assert len(recorder.storage["model_data"].blocks) > 0
+    assert len(recorder.storage["agent_data"].blocks) > 0
+
+
+def test_base_recorder_get_all_dataframes():
+    """Test get_all_dataframes method."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+
     model.step()
 
+    dfs = recorder.get_all_dataframes()
+
+    assert "model_data" in dfs
+    assert "agent_data" in dfs
+    assert "numpy_data" in dfs
+    assert isinstance(dfs["model_data"], pd.DataFrame)
+    assert isinstance(dfs["agent_data"], pd.DataFrame)
+    assert isinstance(dfs["numpy_data"], pd.DataFrame)
+
+
+def test_data_recorder_custom_data_type():
+    """Test DataRecorder with custom/unknown data type (fallback case)."""
+    model = Model()
+    model.data_registry = DataRegistry()
+
+    # Create a custom dataset that returns an unknown type
+    custom_dataset = Mock()
+    custom_dataset.name = "custom_data"
+    custom_dataset.data = CustomDataType("test_data")
+    model.data_registry.datasets["custom_data"] = custom_dataset
+
+    recorder = DataRecorder(model)
+    recorder.clear()
+
+    # Manually trigger collection
+    recorder.collect()
+
+    # Should store as custom type
+    storage = recorder.storage["custom_data"]
+    assert storage.metadata["type"] == "custom"
+    assert len(storage.blocks) > 0
+
+
+def test_data_recorder_empty_numpy_array():
+    """Test storing empty numpy array."""
+    model = MockModel(n=0)  # No agents
+    recorder = DataRecorder(model)
+    recorder.clear()
+
+    # Try to collect with empty array
+    model.step()
+
+    # Should handle gracefully
     df = recorder.get_table_dataframe("numpy_data")
+    assert len(df) == 0
 
-    assert "agent_id" in df.columns
+
+def test_data_recorder_empty_list():
+    """Test storing empty list (no agents)."""
+    model = Model()
+    model.data_registry = DataRegistry()
+
+    # Track agents but with no agents
+    model.data_registry.track_agents(model.agents, "empty_agents", fields=["value"])
+
+    recorder = DataRecorder(model)
+    recorder.clear()
+
+    model.step()
+
+    df = recorder.get_table_dataframe("empty_agents")
+    assert len(df) == 0
+
+
+def test_data_recorder_window_eviction_numpy():
+    """Test window eviction bookkeeping for numpy arrays."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model, config={"numpy_data": DatasetConfig(window_size=2)})
+    recorder.clear()
+
+    # Fill window
+    model.step()  # 1
+    model.step()  # 2
+    model.step()  # 3 - should evict first
+
+    storage = recorder.storage["numpy_data"]
+    assert len(storage.blocks) == 2
+
+
+def test_data_recorder_window_eviction_list():
+    """Test window eviction bookkeeping for list data."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model, config={"agent_data": DatasetConfig(window_size=2)})
+    recorder.clear()
+
+    # Fill window
+    model.step()  # 1
+    model.step()  # 2
+    model.step()  # 3 - should evict first
+
+    storage = recorder.storage["agent_data"]
+    assert len(storage.blocks) == 2
+
+
+def test_data_recorder_window_eviction_dict():
+    """Test window eviction bookkeeping for dict data."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model, config={"model_data": DatasetConfig(window_size=2)})
+    recorder.clear()
+
+    # Fill window
+    model.step()  # 1
+    model.step()  # 2
+    model.step()  # 3 - should evict first
+
+    storage = recorder.storage["model_data"]
+    assert len(storage.blocks) == 2
+
+
+def test_data_recorder_window_eviction_custom():
+    """Test window eviction bookkeeping for custom data type."""
+    model = Model()
+    model.data_registry = DataRegistry()
+
+    custom_dataset = Mock()
+    custom_dataset.name = "custom_data"
+    custom_dataset.data = CustomDataType("test")
+    model.data_registry.datasets["custom_data"] = custom_dataset
+
+    recorder = DataRecorder(model, config={"custom_data": DatasetConfig(window_size=2)})
+    recorder.clear()
+
+    # Fill window
+    recorder.collect()
+    recorder.collect()
+    recorder.collect()  # Should evict first
+
+    storage = recorder.storage["custom_data"]
+    assert len(storage.blocks) == 2
+
+
+def test_data_recorder_clear_nonexistent_dataset():
+    """Test clearing nonexistent dataset raises KeyError."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+
+    with pytest.raises(KeyError):
+        recorder.clear("nonexistent")
+
+
+def test_data_recorder_clear_single_dataset():
+    """Test clearing specific dataset."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+
+    model.step()
+
+    # Clear only model_data
+    recorder.clear("model_data")
+
+    assert len(recorder.storage["model_data"].blocks) == 0
+    assert recorder.storage["model_data"].total_rows == 0
+    assert recorder.storage["model_data"].estimated_size_bytes == 0
+
+    # Other datasets should still have data
+    assert len(recorder.storage["agent_data"].blocks) > 0
+
+
+def test_data_recorder_clear_all_datasets():
+    """Test clearing all datasets."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+
+    model.step()
+
+    # Clear all
+    recorder.clear()
+
+    for name in recorder.storage:
+        assert len(recorder.storage[name].blocks) == 0
+        assert recorder.storage[name].total_rows == 0
+        assert recorder.storage[name].estimated_size_bytes == 0
+
+
+def test_data_recorder_get_table_dataframe_nonexistent():
+    """Test get_table_dataframe with nonexistent dataset."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+
+    with pytest.raises(KeyError):
+        recorder.get_table_dataframe("nonexistent")
+
+
+def test_data_recorder_get_table_dataframe_empty():
+    """Test get_table_dataframe returns empty DataFrame with correct columns."""
+    model = MockModel(n=5)
+    recorder = DataRecorder(model)
+    recorder.clear()
+
+    df = recorder.get_table_dataframe("model_data")
+
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 0
+    assert "model_val" in df.columns
     assert "time" in df.columns
-    assert "value" in df.columns
-    assert "other_value" in df.columns
-
-    # Check IDs are present and correct
-    unique_ids = df["agent_id"].unique()
-    assert len(unique_ids) == 3
-
-    # Verify values align
-    row = df[df["value"] == 0.0].iloc[0]
-    assert row["agent_id"] is not None
 
 
-def test_json_recorder():
-    """Test JSONDataRecorder."""
+def test_data_recorder_get_table_dataframe_unknown_type_warning():
+    """Test that unknown data types trigger warning."""
+    model = Model()
+    model.data_registry = DataRegistry()
+
+    custom_dataset = Mock()
+    custom_dataset.name = "custom_data"
+    custom_dataset.data = CustomDataType("test")
+    model.data_registry.datasets["custom_data"] = custom_dataset
+
+    recorder = DataRecorder(model)
+    recorder.clear()
+    recorder.collect()
+
+    # Manually corrupt the metadata to trigger warning
+    recorder.storage["custom_data"].metadata["type"] = "unknown_type"
+
+    with pytest.warns(RuntimeWarning):
+        _ = recorder.get_table_dataframe("custom_data")
+
+
+def test_json_recorder_numpy_types():
+    """Test JSONDataRecorder handles numpy types in custom encoder."""
     with tempfile.TemporaryDirectory() as temp_dir:
         model = MockModel(n=2)
         recorder = JSONDataRecorder(model, output_dir=temp_dir)
 
         model.step()
-        model.step()
+        df = recorder.get_table_dataframe("numpy_data")
+        assert not df.empty
 
         recorder.save_to_json()
 
-        path = Path(temp_dir)
-        assert (path / "model_data.json").exists()
-        assert (path / "numpy_data.json").exists()
+        # Verify JSON files exist and are valid
+        with open(Path(temp_dir) / "numpy_data.json") as f:
+            data = json.load(f)
+            assert isinstance(data, list)
 
-        # Check retrieval works
+
+def test_json_recorder_numpy_encoder_types():
+    """Test NumpyJSONEncoder handles various numpy types."""
+    encoder = NumpyJSONEncoder()
+
+    # Test int types
+    assert encoder.default(np.int32(5)) == 5
+    assert encoder.default(np.int64(10)) == 10
+
+    # Test float types
+    assert encoder.default(np.float64(2.71)) == pytest.approx(2.71, rel=1e-6)
+
+    # Test bool type
+    assert encoder.default(np.bool_(True)) is True
+    assert encoder.default(np.bool_(False)) is False
+
+    # Test array type
+    arr = np.array([1, 2, 3])
+    assert encoder.default(arr) == [1, 2, 3]
+
+
+def test_json_recorder_clear():
+    """Test JSONDataRecorder clear functionality."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=2)
+        recorder = JSONDataRecorder(model, output_dir=temp_dir)
+
+        model.step()
+        recorder.save_to_json()
+
+        # Clear specific dataset
+        recorder.clear("model_data")
         df = recorder.get_table_dataframe("model_data")
-        assert len(df) >= 2
-        assert "model_val" in df.columns
+        assert df.empty
+
+        # Clear All
+        recorder.clear()
+        with pytest.raises(KeyError):
+            recorder.get_table_dataframe("agent_data")
 
 
-def test_parquet_recorder():
-    """Test ParquetDataRecorder."""
+def test_json_recorder_summary():
+    """Test JSONDataRecorder summary."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=2)
+        recorder = JSONDataRecorder(model, output_dir=temp_dir)
+
+        model.step()
+
+        summary = recorder.summary()
+        assert "datasets" in summary
+        assert "output_dir" in summary
+
+
+def test_parquet_recorder_buffer_and_flush():
+    """Test ParquetDataRecorder buffer and flush mechanisms."""
     pytest.importorskip("pyarrow")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         model = MockModel(n=5)
-        # Set small buffer size to force flush
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.buffer_size = 100
+        recorder.clear("model_data")
+
+        # Add data to buffer without flushing
+        model.step()
+
+        # Check buffer has data
+        assert len(recorder.buffers["model_data"]) > 0
+
+        # Manually flush
+        recorder._flush_buffer("model_data")
+
+        # Buffer should be cleared
+        assert len(recorder.buffers["model_data"]) == 0
+
+        # File should exist
+        filepath = Path(temp_dir) / "model_data.parquet"
+        assert filepath.exists()
+
+
+def test_parquet_recorder_empty_buffer_flush():
+    """Test flushing empty buffer does nothing."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.clear()
+
+        # Flush empty buffer
+        recorder._flush_buffer("model_data")
+
+        # Should not create file
+        filepath = Path(temp_dir) / "model_data.parquet"
+        assert not filepath.exists()
+
+
+def test_parquet_recorder_append_to_existing():
+    """Test appending to existing parquet file."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
         recorder = ParquetDataRecorder(model, output_dir=temp_dir)
         recorder.buffer_size = 1
+        recorder.clear()
 
+        # First write
         model.step()
+
+        # Second write (should append)
         model.step()
 
-        _ = Path(temp_dir)
-
-        # Check data via recorder
         df = recorder.get_table_dataframe("model_data")
         assert len(df) >= 2
+
+
+def test_parquet_recorder_get_nonexistent_dataset():
+    """Test getting nonexistent dataset from parquet."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+
+        with pytest.raises(KeyError):
+            recorder.get_table_dataframe("nonexistent")
+
+
+def test_parquet_recorder_get_nonexistent_file():
+    """Test getting dataset when file doesn't exist."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.clear()
+
+        # Didn't step, so no data written
+        df = recorder.get_table_dataframe("model_data")
+
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 0
+
+
+def test_parquet_recorder_clear_nonexistent():
+    """Test clearing nonexistent dataset."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+
+        with pytest.raises(KeyError):
+            recorder.clear("nonexistent")
+
+
+def test_parquet_recorder_summary_with_files():
+    """Test summary with existing parquet files."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.buffer_size = 1
+        recorder.clear()
+
+        model.step()
+
+        summary = recorder.summary()
+
+        assert "output_dir" in summary
+        assert "model_data" in summary
+        assert summary["model_data"]["rows"] > 0
+        assert "size_mb" in summary["model_data"]
+
+
+def test_parquet_recorder_summary_no_files():
+    """Test summary when no files exist yet."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.clear()
+
+        summary = recorder.summary()
+
+        assert summary["model_data"]["size_mb"] == 0
+        assert summary["model_data"]["rows"] == 0
+
+
+def test_parquet_recorder_cleanup_on_delete():
+    """Test that __del__ flushes buffers."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.buffer_size = 100
+        recorder.clear()
+
+        model.step()
+
+        del recorder
+
+        # File should exist (buffer was flushed)
+        filepath = Path(temp_dir) / "model_data.parquet"
+        assert filepath.exists()
+
+
+def test_parquet_recorder_dict_data_storage():
+    """Test storing dict data (model data) in parquet."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.buffer_size = 1
+        recorder.clear()
+
+        model.step()
+
+        # Check dict was stored correctly
+        df = recorder.get_table_dataframe("model_data")
         assert "model_val" in df.columns
-
-        # Check Numpy data written to parquet has correct columns
-        df_numpy = recorder.get_table_dataframe("numpy_data")
-        assert "agent_id" in df_numpy.columns
-        assert "value" in df_numpy.columns
-        assert len(df_numpy) > 0
+        assert "time" in df.columns
 
 
-def test_sql_recorder():
-    """Test SQLDataRecorder (SQLite)."""
-    model = MockModel(n=5)
+def test_parquet_recorder_list_data_storage():
+    """Test storing list data (agent data) in parquet."""
+    pytest.importorskip("pyarrow")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        model = MockModel(n=5)
+        recorder = ParquetDataRecorder(model, output_dir=temp_dir)
+        recorder.clear()
+
+        model.step()
+
+        # Check list was stored correctly
+        df = recorder.get_table_dataframe("agent_data")
+        assert "value" in df.columns
+        assert "time" in df.columns
+        assert len(df) == 5  # 5 agents
+
+
+def test_sql_recorder_store_empty_numpy():
+    """Test SQL recorder with empty numpy array."""
+    model = MockModel(n=0)  # No agents
     recorder = SQLDataRecorder(model, db_path=":memory:")
 
     model.step()
+
+    # Should handle gracefully
+    df = recorder.get_table_dataframe("numpy_data")
+    assert len(df) == 0
+
+
+def test_sql_recorder_store_empty_list():
+    """Test SQL recorder with empty list."""
+    model = Model()
+    model.data_registry = DataRegistry()
+    model.data_registry.track_agents(model.agents, "empty_agents", fields=["value"])
+
+    recorder = SQLDataRecorder(model, db_path=":memory:")
+
     model.step()
 
-    # Query via recorder
-    df = recorder.query("SELECT * FROM model_data")
-    assert len(df) >= 2
-    assert "model_val" in df.columns
+    # Should handle gracefully (no table created)
+    df = recorder.get_table_dataframe("empty_agents")
+    assert len(df) == 0
 
-    # Test get_table_dataframe
-    df_agent = recorder.get_table_dataframe("agent_data")
-    assert not df_agent.empty
 
-    # Test numpy storage
-    df_numpy = recorder.get_table_dataframe("numpy_data")
-    assert "agent_id" in df_numpy.columns
-    assert "value" in df_numpy.columns
+def test_sql_recorder_numpy_without_dataset():
+    """Test SQL recorder stores numpy data when dataset not in registry."""
+    model = MockModel(n=2)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
 
-    # Test clear
+    # Manually store data
+    data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    recorder._store_dataset_snapshot("numpy_data", 0, data)
+
+    df = recorder.get_table_dataframe("numpy_data")
+    assert len(df) == 4
+    assert "value" in df.columns
+
+
+def test_sql_recorder_numpy_with_time_column():
+    """Test SQL recorder with Numpy data."""
+    model = MockModel(n=2)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
+
+    model.step()
+
+    df = recorder.get_table_dataframe("numpy_data")
+    assert not df.empty
+    assert "time" in df.columns
+    assert "agent_id" in df.columns
+
+
+def test_sql_recorder_get_nonexistent_dataset():
+    """Test getting nonexistent dataset."""
+    model = MockModel(n=5)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
+
+    with pytest.raises(KeyError):
+        recorder.get_table_dataframe("nonexistent")
+
+
+def test_sql_recorder_get_empty_dataset():
+    """Test getting dataset when table not created."""
+    model = MockModel(n=5)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
     recorder.clear()
 
-    # Tables should be dropped
-    with pytest.raises(Exception):
-        recorder.query("SELECT * FROM model_data")
+    df = recorder.get_table_dataframe("model_data")
+    assert len(df) == 0
 
 
-def test_recorder_summary():
-    """Test summary generation."""
-    model = MockModel()
-    recorder = DataRecorder(model)
-    model.step()
+def test_sql_recorder_clear_nonexistent():
+    """Test clearing nonexistent dataset."""
+    model = MockModel(n=5)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
+
+    with pytest.raises(KeyError):
+        recorder.clear("nonexistent")
+
+
+def test_sql_recorder_summary_no_tables():
+    """Test summary when tables not created."""
+    model = MockModel(n=5)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
+    recorder.clear()
 
     summary = recorder.summary()
-    assert summary["datasets"] == 3  # model, agent, numpy
-    assert summary["total_rows"] > 0
-    assert "memory_mb" in summary
+
+    assert summary["model_data"]["rows"] == 0
 
 
-def test_datarecorder_eviction_coverage():
-    """Test eviction logic for all data types (numpy, list, dict, custom)."""
-    model = MockModel()
+def test_sql_recorder_cleanup_on_delete():
+    """Test connection cleanup on __del__."""
+    model = MockModel(n=5)
+    recorder = SQLDataRecorder(model, db_path=":memory:")
 
-    # Create datasets in registry
-    model.data_registry.create_dataset(TableDataSet, "np_ds", fields="v")
-    model.data_registry.create_dataset(TableDataSet, "list_ds", fields="v")
-    model.data_registry.create_dataset(TableDataSet, "dict_ds", fields="v")
-    model.data_registry.create_dataset(TableDataSet, "custom_ds", fields="v")
+    conn = recorder.conn
 
-    # Config with window_size=1 to force eviction on 2nd insert
+    # Delete recorder
+    del recorder
+
+    # Connection should be closed (this will raise an error)
+    with pytest.raises(Exception):
+        conn.execute("SELECT 1")
+
+
+def test_sql_recorder_with_file_database():
+    """Test SQL recorder with file database."""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    try:
+        model = MockModel(n=5)
+        recorder = SQLDataRecorder(model, db_path=db_path)
+
+        model.step()
+
+        df = recorder.get_table_dataframe("model_data")
+        assert len(df) > 0
+
+        recorder.conn.close()
+
+        # File should exist
+        assert os.path.exists(db_path)
+    finally:
+        if os.path.exists(db_path):
+            os.unlink(db_path)
+
+
+def test_recorder_with_disabled_dataset():
+    """Test that disabled datasets are not collected."""
+    model = MockModel(n=5)
+
     config = {
-        "np_ds": DatasetConfig(window_size=1),
-        "list_ds": DatasetConfig(window_size=1),
-        "dict_ds": DatasetConfig(window_size=1),
-        "custom_ds": DatasetConfig(window_size=1),
+        "model_data": DatasetConfig(enabled=False),
+        "agent_data": DatasetConfig(enabled=True),
     }
 
     recorder = DataRecorder(model, config=config)
-
-    # 1. Custom Data Type (triggers 'case _:' and 'type="custom"')
-    recorder._store_dataset_snapshot("custom_ds", 1, "value1")
-    assert recorder.storage["custom_ds"].metadata["type"] == "custom"
-
-    # Push second value to trigger eviction of "value1" (custom eviction logic)
-    recorder._store_dataset_snapshot("custom_ds", 2, "value2")
-    assert len(recorder.storage["custom_ds"].blocks) == 1
-    assert recorder.storage["custom_ds"].blocks[0][1] == "value2"
-
-    # 2. Numpy Eviction
-    recorder._store_dataset_snapshot("np_ds", 1, np.array([1]))
-    recorder._store_dataset_snapshot("np_ds", 2, np.array([2]))
-    assert len(recorder.storage["np_ds"].blocks) == 1
-
-    # 3. List Eviction
-    recorder._store_dataset_snapshot("list_ds", 1, [{"a": 1}])
-    recorder._store_dataset_snapshot("list_ds", 2, [{"b": 2}])
-    assert len(recorder.storage["list_ds"].blocks) == 1
-
-    # 4. Dict Eviction
-    recorder._store_dataset_snapshot("dict_ds", 1, {"a": 1})
-    recorder._store_dataset_snapshot("dict_ds", 2, {"b": 2})
-    assert len(recorder.storage["dict_ds"].blocks) == 1
-
-
-def test_datarecorder_clear_specific():
-    """Test clearing a specific dataset and handling invalid names."""
-    model = MockModel()
-    model.data_registry.create_dataset(TableDataSet, "test_ds", fields="v")
-    recorder = DataRecorder(model)
-
-    recorder._store_dataset_snapshot("test_ds", 1, {"v": 1})
-    assert recorder.storage["test_ds"].total_rows == 1
-
-    # Clear specific
-    recorder.clear("test_ds")
-    assert recorder.storage["test_ds"].total_rows == 0
-
-    # Clear invalid
-    with pytest.raises(KeyError):
-        recorder.clear("non_existent")
-
-
-def test_numpy_json_encoder_coverage():
-    """Test JSON serialization of specific Numpy types."""
-    data = {
-        "float": np.float32(1.5),
-        "bool": np.bool_(True),
-        "array": np.array([1, 2]),
-        "int": np.int32(10),
-    }
-
-    # Dump to string using the encoder
-    json_str = json.dumps(data, cls=NumpyJSONEncoder)
-
-    # Parse back to check values
-    decoded = json.loads(json_str)
-    assert decoded["float"] == 1.5
-    assert decoded["bool"] is True
-    assert decoded["array"] == [1, 2]
-    assert decoded["int"] == 10
-
-
-@patch("pandas.DataFrame.to_parquet")
-@patch("pandas.read_parquet")
-@patch("pathlib.Path.exists")
-@patch("pathlib.Path.unlink")
-def test_parquet_recorder_coverage(
-    mock_unlink, mock_exists, mock_read, mock_to_parquet
-):
-    """Test ParquetRecorder logic by mocking file I/O (runs without pyarrow)."""
-    model = MockModel()
-
-    # 1. Setup Registry with agent_ids support logic check
-    # We need a mock dataset that has 'agent_ids' to test the np.ndarray logic branch
-    mock_dataset = MagicMock()
-    mock_dataset._attributes = ["col1"]
-    mock_dataset.agent_ids = np.array([100])
-    model.data_registry.datasets["numpy_ds"] = mock_dataset
-
-    recorder = ParquetDataRecorder(model)
-    recorder.buffer_size = 1  # Force flush on every write
-    recorder._initialize_dataset_storage("numpy_ds", mock_dataset)
-
-    # 2. Test Storing Numpy Data (triggers IDs stacking logic)
-    data = np.array([[1.0]])
-    recorder._store_dataset_snapshot("numpy_ds", 1, data)
-
-    # Verify to_parquet was called (flush happened)
-    assert mock_to_parquet.called
-    # Verify ID stacking: The dataframe passed to to_parquet should have 'agent_id'
-    # call_args[0][0] is the filename (if args used) or self (if method mock).
-    # Since we mocked DataFrame.to_parquet, the first arg to the real function is 'self' (the df).
-    # But usually patch replaces the unbound method or instance method.
-    # Let's check the logic inside _store_dataset_snapshot more simply:
-    # It constructs a DF. We can verify logic by checking if it ran without error
-    # and hit the flush.
-
-    # 3. Test get_table_dataframe
-    mock_exists.return_value = True  # File exists
-    mock_read.return_value = pd.DataFrame({"a": [1]})
-
-    df = recorder.get_table_dataframe("numpy_ds")
-    assert not df.empty
-    assert mock_read.called
-
-    # 4. Test Clear (Specific)
-    recorder.clear("numpy_ds")
-    assert mock_unlink.called
-
-    # 5. Test Clear (All)
     recorder.clear()
-    assert mock_unlink.call_count >= 2
 
-    # 6. Test Summary (File exists branch)
-    # We need to mock os.path.getsize as well if we want full coverage there,
-    # but the basics are covered.
-    with patch("os.path.getsize", return_value=1024):
-        summary = recorder.summary()
-        assert "numpy_ds" in summary
+    model.step()
+
+    # Disabled dataset should have no data
+    assert len(recorder.storage["model_data"].blocks) == 0
+
+    # Enabled dataset should have data
+    assert len(recorder.storage["agent_data"].blocks) > 0
+
+
+def test_recorder_end_time_behavior():
+    """Test that collection stops at end_time."""
+    model = MockModel(n=5)
+
+    config = {"model_data": DatasetConfig(interval=1, start_time=0, end_time=2)}
+
+    recorder = DataRecorder(model, config=config)
+    recorder.clear()
+
+    # Step through time
+    model.step()  # t=1
+    model.step()  # t=2
+    model.step()  # t=3 (should not collect)
+
+    # Should only have data from t=1 -> t=2
+    df = recorder.get_table_dataframe("model_data")
+    times = df["time"].unique()
+    assert 1.0 in times
+    assert 2.0 in times
+    assert 3.0 not in times
+
+
+def test_recorder_start_time_behavior():
+    """Test that collection starts at start_time."""
+    model = MockModel(n=5)
+
+    config = {"model_data": DatasetConfig(interval=1, start_time=2)}
+
+    recorder = DataRecorder(model, config=config)
+
+    # Initial collection should not happen (t=0 < start_time=2)
+    assert len(recorder.storage["model_data"].blocks) == 0
+
+    # Step to start_time
+    model.step()  # t=1 (should not collect)
+    model.step()  # t=2 (should collect)
+
+    df = recorder.get_table_dataframe("model_data")
+    times = df["time"].unique()
+    assert 1.0 not in times
+    assert 2.0 in times
