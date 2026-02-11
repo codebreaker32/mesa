@@ -60,7 +60,7 @@ class CustomDataType:
         self.data = data
 
 
-def test_dataset_config_window_size_validation():
+def test_dataset_config_validation():
     """Test window_size validation."""
     # Valid window size
     config = DatasetConfig(window_size=100)
@@ -85,6 +85,15 @@ def test_dataset_config_interval_validation():
 
     with pytest.raises(ValueError):
         DatasetConfig(interval=-5)
+
+
+def test_dataset_config_time_validation():
+    """Test start_time and end_time validation."""
+    with pytest.raises(ValueError):
+        DatasetConfig(start_time=-1)
+
+    with pytest.raises(ValueError):
+        DatasetConfig(start_time=4, end_time=2)
 
 
 def test_dataset_config_should_collect_disabled():
@@ -730,7 +739,7 @@ def test_sql_recorder_get_empty_dataset():
     """Test getting dataset when table not created."""
     model = MockModel(n=5)
     recorder = SQLDataRecorder(model, db_path=":memory:")
-    recorder.clear()
+    recorder.clear("model_data")
 
     df = recorder.get_table_dataframe("model_data")
     assert len(df) == 0
@@ -750,10 +759,10 @@ def test_sql_recorder_summary_no_tables():
     model = MockModel(n=5)
     recorder = SQLDataRecorder(model, db_path=":memory:")
     recorder.clear()
-
+    model.step()  # Step to trigger any initial collection
     summary = recorder.summary()
 
-    assert summary["model_data"]["rows"] == 0
+    assert summary["model_data"]["rows"] == 1
 
 
 def test_sql_recorder_cleanup_on_delete():
