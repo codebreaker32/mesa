@@ -222,7 +222,7 @@ class BaseDataRecorder(ABC):
         current_time = self.model.time
 
         for name, config in self.configs.items():
-            if not config.enabled:
+            if not config.enabled or current_time == config._next_collection:
                 continue
 
             dataset = self.registry.datasets[name]
