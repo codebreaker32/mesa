@@ -217,7 +217,8 @@ class Model[A: Agent, S: Scenario](HasObservables):
                 break
 
             if event.time <= until:
-                self.time = event.time
+                if self.time != event.time:
+                    self.time = event.time
                 event.execute()
             else:
                 self._event_list.add_event(event)
