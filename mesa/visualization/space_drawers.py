@@ -203,26 +203,32 @@ class HexSpaceDrawer(BaseSpaceDrawer):
         self.x_spacing = np.sqrt(3) * size
         self.y_spacing = 1.5 * size
 
-        x_max = self.space.width * self.x_spacing + (self.space.height % 2) * (
-            self.x_spacing / 2
-        )
-        y_max = self.space.height * self.y_spacing
+        # Defensive check for mesa.space
+        if hasattr(self.space, "all_cells"):
+            positions = np.array([cell.position for cell in self.space.all_cells])
+            x_min, y_min = positions.min(axis=0)
+            x_max, y_max = positions.max(axis=0)
+        else:
+            # Fallback for classic HexSingleGrid/HexMultiGrid
+            x_min, y_min = 0, 0
+            x_max = self.space.width * self.x_spacing + (self.space.height % 2) * (
+                self.x_spacing / 2
+            )
+            y_max = self.space.height * self.y_spacing
 
         x_padding = size * np.sqrt(3) / 2
         y_padding = size
 
-        self.hexagons = self._get_hexmesh(self.space.width, self.space.height, size)
+        self.hexagons = self._get_hexmesh(size)
 
         # Parameters for visualization limits
-        self.viz_xmin = -1.8 * x_padding
-        self.viz_xmax = x_max
-        self.viz_ymin = -1.8 * y_padding
-        self.viz_ymax = y_max
+        self.viz_xmin = x_min - x_padding
+        self.viz_xmax = x_max + x_padding
+        self.viz_ymin = y_min - y_padding
+        self.viz_ymax = y_max + y_padding
 
-    def _get_hexmesh(
-        self, width: int, height: int, size: float = 1.0
-    ) -> list[tuple[float, float]]:
-        """Generate hexagon vertices for the mesh. Yields list of vertex coordinates for each hexagon."""
+    def _get_hexmesh(self, size: float = 1.0) -> list[list[tuple[float, float]]]:
+        """Generate hexagon vertices for the mesh. Yields list of list of vertex coordinates for each hexagon."""
 
         # Helper function for getting the vertices of a hexagon given the center and size
         def _get_hex_vertices(
@@ -239,15 +245,19 @@ class HexSpaceDrawer(BaseSpaceDrawer):
             ]
             return vertices
 
-        x_spacing = np.sqrt(3) * size
-        y_spacing = 1.5 * size
         hexagons = []
-
-        for row, col in itertools.product(range(height), range(width)):
-            # Calculate center position with offset for even rows
-            x = col * x_spacing + (row % 2 == 0) * (x_spacing / 2)
-            y = row * y_spacing
-            hexagons.append(_get_hex_vertices(x, y, size))
+        if hasattr(self.space, "all_cells"):
+            for cell in self.space.all_cells:
+                cx, cy = cell.position
+                hexagons.append(_get_hex_vertices(cx, cy, size))
+        else:
+            for row, col in itertools.product(
+                range(self.space.height), range(self.space.width)
+            ):
+                # Calculate center position with offset for even rows
+                x = col * self.x_spacing + (row % 2 == 0) * (self.x_spacing / 2)
+                y = row * self.y_spacing
+                hexagons.append(_get_hex_vertices(x, y, size))
 
         return hexagons
 
@@ -382,7 +392,16 @@ class NetworkSpaceDrawer(BaseSpaceDrawer):
 
         # gather locations for nodes in network
         self.graph = self.space.G
-        self.pos = self.layout_alg(self.graph, **self.layout_kwargs)
+
+        self.pos = {}
+
+        if hasattr(self.space, "_cells"):
+            for node_id, cell in self.space._cells.items():
+                if getattr(cell, "_position", None) is not None:
+                    self.pos[node_id] = cell.position
+
+        else:
+            self.pos = self.layout_alg(self.graph, **self.layout_kwargs)
 
         x, y = list(zip(*self.pos.values())) if self.pos else ([0], [0])
         xmin, xmax = min(x), max(x)
@@ -606,11 +625,11 @@ class VoronoiSpaceDrawer(BaseSpaceDrawer):
             space: The Voronoi grid space to draw
         """
         super().__init__(space)
-        if self.space.centroids_coordinates:
-            x_list = [i[0] for i in self.space.centroids_coordinates]
-            y_list = [i[1] for i in self.space.centroids_coordinates]
-            x_max, x_min = max(x_list), min(x_list)
-            y_max, y_min = max(y_list), min(y_list)
+        # Use the Cell.position property for calculations
+        positions = np.array([cell.position for cell in self.space.all_cells])
+        if len(positions) > 0:
+            x_min, y_min = positions.min(axis=0)
+            x_max, y_max = positions.max(axis=0)
         else:
             x_max, x_min, y_max, y_min = 1, 0, 1, 0
 
