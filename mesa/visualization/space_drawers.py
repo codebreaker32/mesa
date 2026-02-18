@@ -5,7 +5,6 @@ orthogonal grids, hexagonal grids, networks, continuous spaces, and Voronoi grid
 It includes implementations for both Matplotlib and Altair backends.
 """
 
-import itertools
 from itertools import pairwise
 
 import altair as alt
@@ -193,7 +192,7 @@ class HexSpaceDrawer(BaseSpaceDrawer):
         super().__init__(space)
         self.s_default = (180 / max(self.space.width, self.space.height)) ** 2
         size = 1.0
-        
+
         positions = np.array([cell.position for cell in self.space.all_cells])
         x_min, y_min = positions.min(axis=0)
         x_max, y_max = positions.max(axis=0)
