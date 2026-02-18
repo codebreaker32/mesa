@@ -193,21 +193,10 @@ class HexSpaceDrawer(BaseSpaceDrawer):
         super().__init__(space)
         self.s_default = (180 / max(self.space.width, self.space.height)) ** 2
         size = 1.0
-        self.x_spacing = np.sqrt(3) * size
-        self.y_spacing = 1.5 * size
-
-        # Defensive check for mesa.space
-        if hasattr(self.space, "all_cells"):
-            positions = np.array([cell.position for cell in self.space.all_cells])
-            x_min, y_min = positions.min(axis=0)
-            x_max, y_max = positions.max(axis=0)
-        else:
-            # Fallback for classic HexSingleGrid/HexMultiGrid
-            x_min, y_min = 0, 0
-            x_max = self.space.width * self.x_spacing + (self.space.height % 2) * (
-                self.x_spacing / 2
-            )
-            y_max = self.space.height * self.y_spacing
+        
+        positions = np.array([cell.position for cell in self.space.all_cells])
+        x_min, y_min = positions.min(axis=0)
+        x_max, y_max = positions.max(axis=0)
 
         x_padding = size * np.sqrt(3) / 2
         y_padding = size
@@ -239,18 +228,9 @@ class HexSpaceDrawer(BaseSpaceDrawer):
             return vertices
 
         hexagons = []
-        if hasattr(self.space, "all_cells"):
-            for cell in self.space.all_cells:
-                cx, cy = cell.position
-                hexagons.append(_get_hex_vertices(cx, cy, size))
-        else:
-            for row, col in itertools.product(
-                range(self.space.height), range(self.space.width)
-            ):
-                # Calculate center position with offset for even rows
-                x = col * self.x_spacing + (row % 2 == 0) * (self.x_spacing / 2)
-                y = row * self.y_spacing
-                hexagons.append(_get_hex_vertices(x, y, size))
+        for cell in self.space.all_cells:
+            cx, cy = cell.position
+            hexagons.append(_get_hex_vertices(cx, cy, size))
 
         return hexagons
 
@@ -388,13 +368,9 @@ class NetworkSpaceDrawer(BaseSpaceDrawer):
 
         self.pos = {}
 
-        if hasattr(self.space, "_cells"):
-            for node_id, cell in self.space._cells.items():
-                if getattr(cell, "_position", None) is not None:
-                    self.pos[node_id] = cell.position
-
-        else:
-            self.pos = self.layout_alg(self.graph, **self.layout_kwargs)
+        for node_id, cell in self.space._cells.items():
+            if getattr(cell, "_position", None) is not None:
+                self.pos[node_id] = cell.position
 
         x, y = list(zip(*self.pos.values())) if self.pos else ([0], [0])
         xmin, xmax = min(x), max(x)
