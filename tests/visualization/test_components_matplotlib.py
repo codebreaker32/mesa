@@ -146,7 +146,7 @@ def test_draw_property_layers():
 
     model = Model(rng=42)
     grid = OrthogonalMooreGrid((10, 10), torus=True, random=model.random, capacity=1)
-    grid.create_property_layer("test", 0.0)
+    grid.create_property("test", 0.0)
 
     fig = Figure()
     ax = fig.add_subplot()
