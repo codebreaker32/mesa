@@ -192,7 +192,7 @@ class HexSpaceDrawer(BaseSpaceDrawer):
         super().__init__(space)
         self.s_default = (180 / max(self.space.width, self.space.height)) ** 2
         size = 1.0
-        
+
         self.x_spacing = np.sqrt(3) * size
         self.y_spacing = 1.5 * size
 
