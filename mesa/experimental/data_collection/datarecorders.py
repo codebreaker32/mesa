@@ -65,7 +65,11 @@ class DataRecorder(BaseDataRecorder):
         )
 
     def _store_dataset_snapshot(
-        self, dataset_name: str, time: int | float, data: Any
+        self,
+        dataset_name: str,
+        time: int | float,
+        data: Any,
+        is_overwrite: bool = False,
     ) -> None:
         """Store data snapshot with automatic window management."""
         storage = self.storage[dataset_name]
@@ -73,8 +77,10 @@ class DataRecorder(BaseDataRecorder):
 
         # Track old data if we're about to evict
         old_data = None
-        if config.window_size and len(storage.blocks) >= config.window_size:
-            _old_time, old_data = storage.blocks[0]
+        if is_overwrite and storage.blocks:
+            _, old_data = storage.blocks.pop()
+        elif config.window_size and len(storage.blocks) >= config.window_size:
+            _, old_data = storage.blocks.popleft()
 
         # Store new data
         added_bytes = 0
@@ -316,9 +322,17 @@ class JSONDataRecorder(BaseDataRecorder):
         self.data[dataset_name] = []
 
     def _store_dataset_snapshot(
-        self, dataset_name: str, time: int | float, data: Any
+        self,
+        dataset_name: str,
+        time: int | float,
+        data: Any,
+        is_overwrite: bool = False,
     ) -> None:
         """Store snapshot as dict."""
+        # handle overwrite
+        if is_overwrite and self.data[dataset_name]:
+            self.data[dataset_name].pop()
+
         match data:
             case dict():
                 self.data[dataset_name].append({"time": time, "data": data})
@@ -403,10 +417,19 @@ class ParquetDataRecorder(BaseDataRecorder):
         self.buffers[dataset_name] = []
 
     def _store_dataset_snapshot(
-        self, dataset_name: str, time: int | float, data: Any
+        self,
+        dataset_name: str,
+        time: int | float,
+        data: Any,
+        is_overwrite: bool = False,
     ) -> None:
         """Buffer data and write to Parquet when buffer is full."""
         buffer = self.buffers[dataset_name]
+
+        # handle overwrite
+        if is_overwrite:
+            while buffer and buffer[-1]["time"] == time:
+                buffer.pop()
 
         match data:
             case np.ndarray() if data.size > 0:
@@ -543,9 +566,17 @@ class SQLDataRecorder(BaseDataRecorder):
         self.metadata[dataset_name] = {"table_created": False, "columns": []}
 
     def _store_dataset_snapshot(
-        self, dataset_name: str, time: int | float, data: Any
+        self,
+        dataset_name: str,
+        time: int | float,
+        data: Any,
+        is_overwrite: bool = False,
     ) -> None:
         """Store data snapshot in SQL."""
+        # handle overwrite
+        if is_overwrite and self.metadata[dataset_name]["table_created"]:
+            self.conn.execute(f'DELETE FROM "{dataset_name}" WHERE time = ?', (time,))  # noqa: S608
+
         match data:
             case np.ndarray() if data.size > 0:
                 self._store_numpy_data(dataset_name, time, data)
