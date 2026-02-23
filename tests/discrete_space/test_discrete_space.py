@@ -825,9 +825,17 @@ def test_property_layer_integration():
     with pytest.raises(ValueError):
         grid._attach_property_layer("elevation", np.array([0, 0]))
 
+    assert grid.elevation is grid._property_layers["elevation"]
+    grid.elevation[3, 4] = 99.0
+    assert grid._cells[(3, 4)].elevation == 99.0
+
     grid.remove_property_layer("elevation")
     assert "elevation" not in grid._property_layers
     assert not hasattr(cell, "elevation")
+
+    # Test name conflict raises ValueError
+    with pytest.raises(ValueError):
+        grid.create_property_layer("width")
 
 
 def test_copy_pickle_with_property_layers():
