@@ -123,6 +123,33 @@ class Grid(DiscreteSpace[T]):
         self._connect_cells()
         self.create_property_layer("empty", default_value=True, dtype=bool)
 
+    def __getattr__(self, name: str) -> np.ndarray:
+        """Allow direct _property_layer access via attribute lookup on the grid.
+
+        Looks up `name` in `_property_layers` enabling `grid.sugar`
+        as a shorthand for `grid._property_layers["sugar"]`.
+
+        Note:
+            `grid.sugar` returns the full NumPy array while `cell.sugar` returns
+            a scalar — same name, different granularity.
+
+        Example:
+            >>> grid.create_property_layer("sugar", default_value=0.0)
+            >>> grid.sugar                      # np.ndarray shape (width, height)
+            >>> grid.sugar[10, 5]               # scalar at coordinate (10, 5)
+            >>> grid.sugar[:] = 0              # reset all values
+            >>> grid.sugar[grid.sugar > 4] = 4  # cap in-place
+
+        Raises:
+            AttributeError: If no property layer with that name exists.
+        """
+        if name == "_property_layers":  # guard against recursion during __init__
+            raise AttributeError(name)
+        try:
+            return self._property_layers[name]
+        except KeyError as e:
+            raise AttributeError(f"No property_layer named '{name}' exists") from e
+
     def create_property_layer(
         self,
         name: str,
@@ -160,6 +187,13 @@ class Grid(DiscreteSpace[T]):
     def _attach_property_layer(
         self, name: str, array: np.ndarray, read_only: bool = False
     ) -> None:
+        if name in type(self).__dict__ or any(
+            name in c.__dict__ for c in type(self).__mro__
+        ):
+            raise ValueError(
+                f"property_layer '{name}' conflicts with an existing Grid attribute."
+            )
+
         if name in self._property_layers:
             raise ValueError(f"property_layer '{name}' already exists.")
 
