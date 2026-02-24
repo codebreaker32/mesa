@@ -794,8 +794,8 @@ def test_property_layer_integration():
     grid = OrthogonalMooreGrid(dimensions, torus=False, random=random.Random(42))
 
     grid.create_property_layer("elevation", default_value=0.0)
-    assert "elevation" in grid._property_layers
-    assert len(grid._property_layers) == 2
+    assert "elevation" in grid.property_layers
+    assert len(grid.property_layers) == 2
 
     # Test accessing Property Layer from a cell
     cell = grid._cells[(0, 0)]
@@ -817,7 +817,7 @@ def test_property_layer_integration():
 
     with pytest.raises(ValueError):
         grid.add_property_layer("test", np.array([1, 2]))
-    assert "test" not in grid._property_layers
+    assert "test" not in grid.property_layers
 
     with pytest.raises(KeyError):
         grid.remove_property_layer("foobar")
@@ -825,12 +825,12 @@ def test_property_layer_integration():
     with pytest.raises(ValueError):
         grid._attach_property_layer("elevation", np.array([0, 0]))
 
-    assert grid.elevation is grid._property_layers["elevation"]
+    assert grid.elevation is grid.property_layers["elevation"]
     grid.elevation[3, 4] = 99.0
     assert grid._cells[(3, 4)].elevation == 99.0
 
     grid.remove_property_layer("elevation")
-    assert "elevation" not in grid._property_layers
+    assert "elevation" not in grid.property_layers
     assert not hasattr(cell, "elevation")
 
     # Test name conflict raises ValueError
@@ -846,14 +846,14 @@ def test_copy_pickle_with_property_layers():
     grid2 = copy.deepcopy(grid)
     assert grid2._cells[(0, 0)].empty
     grid2._cells[(0, 0)].empty = False
-    assert grid2._cells[(0, 0)].empty == grid2._property_layers["empty"][0, 0]
+    assert grid2._cells[(0, 0)].empty == grid2.property_layers["empty"][0, 0]
 
     grid = OrthogonalMooreGrid(dimensions, torus=False, random=random.Random(42))
     dump = pickle.dumps(grid)
     grid2 = pickle.loads(dump)  # noqa: S301
     assert grid2._cells[(0, 0)].empty
     grid2._cells[(0, 0)].empty = False
-    assert grid2._cells[(0, 0)].empty == grid2._property_layers["empty"][0, 0]
+    assert grid2._cells[(0, 0)].empty == grid2.property_layers["empty"][0, 0]
 
 
 def test_multiple_property_layers():
@@ -863,12 +863,12 @@ def test_multiple_property_layers():
 
     grid.create_property_layer("elevation", default_value=0.0)
     grid.create_property_layer("temperature", default_value=20.0)
-    assert "elevation" in grid._property_layers
-    assert "temperature" in grid._property_layers
-    assert len(grid._property_layers) == 3  # empty + elevation + temperature
+    assert "elevation" in grid.property_layers
+    assert "temperature" in grid.property_layers
+    assert len(grid.property_layers) == 3  # empty + elevation + temperature
 
-    grid._property_layers["elevation"][:] += 10
-    grid._property_layers["temperature"][:] += 5
+    grid.property_layers["elevation"][:] += 10
+    grid.property_layers["temperature"][:] += 5
 
     for cell in grid.all_cells:
         assert cell.elevation == 10
@@ -1094,8 +1094,8 @@ def test_select_random_empty_cell_fallback():
     assert selected_cell.is_empty
 
     # Ensure the property layer data was actually correct (the fallback relies on this)
-    assert grid._property_layers["empty"][5, 5]
-    assert not grid._property_layers["empty"][0, 0]
+    assert grid.property_layers["empty"][5, 5]
+    assert not grid.property_layers["empty"][0, 0]
 
 
 def test_fixed_agent_removal_state():

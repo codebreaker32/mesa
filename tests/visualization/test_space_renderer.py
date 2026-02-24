@@ -119,7 +119,7 @@ def test_no_property_layers():
 
     # Simulate missing property layer in the grid
     with (
-        patch.object(model.grid, "_property_layers", new={}),
+        patch.object(model.grid, "property_layers", new={}),
         pytest.raises(
             Exception,
             match="No property layer",  # More flexible pattern

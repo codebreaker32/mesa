@@ -87,7 +87,7 @@ Discrete spaces support PropertyLayers - efficient numpy-based arrays for storin
 ```python
 # Create and use a property layer
 grid.create_property_layer("elevation", default_value=10)
-high_ground = grid._property_layers["elevation"] > 50
+high_ground = grid.property_layers["elevation"] > 50
 ```
 
 #### Continuous Space

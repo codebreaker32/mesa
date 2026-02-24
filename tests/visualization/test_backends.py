@@ -134,7 +134,7 @@ def test_matplotlib_backend_draw_property():
 
     result = mb.draw_property_layer(
         space,
-        space._property_layers,
+        space.property_layers,
         lambda l: PropertyLayerStyle(  # noqa: E741
             color="red", alpha=0.5, vmin=0, vmax=1, colorbar=False
         ),
@@ -144,7 +144,7 @@ def test_matplotlib_backend_draw_property():
 
     result = mb.draw_property_layer(
         space,
-        space._property_layers,
+        space.property_layers,
         lambda l: PropertyLayerStyle(  # noqa: E741
             colormap="viridis", alpha=0.5, vmin=0, vmax=1, colorbar=True
         ),
@@ -155,7 +155,7 @@ def test_matplotlib_backend_draw_property():
     with pytest.raises(ValueError, match="Specify one of 'color' or 'colormap'"):
         mb.draw_property_layer(
             space,
-            space._property_layers,
+            space.property_layers,
             lambda l: PropertyLayerStyle(  # noqa: E741
                 color=None, colormap=None, alpha=1.0, vmin=0, vmax=1, colorbar=False
             ),
@@ -259,7 +259,7 @@ def test_altair_backend_draw_property_layer():
     assert (
         ab.draw_property_layer(
             space,
-            space._property_layers,
+            space.property_layers,
             lambda l: PropertyLayerStyle(  # noqa: E741
                 color="red", alpha=0.5, vmin=0, vmax=1, colorbar=False
             ),
@@ -270,7 +270,7 @@ def test_altair_backend_draw_property_layer():
     assert (
         ab.draw_property_layer(
             space,
-            space._property_layers,
+            space.property_layers,
             lambda l: PropertyLayerStyle(  # noqa: E741
                 colormap="viridis", alpha=0.5, vmin=0, vmax=1, colorbar=True
             ),
@@ -281,7 +281,7 @@ def test_altair_backend_draw_property_layer():
     with pytest.raises(ValueError, match="Specify one of 'color' or 'colormap'"):
         ab.draw_property_layer(
             space,
-            space._property_layers,
+            space.property_layers,
             lambda l: PropertyLayerStyle(  # noqa: E741
                 color=None, colormap=None, alpha=1.0, vmin=0, vmax=1, colorbar=False
             ),

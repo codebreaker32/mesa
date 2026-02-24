@@ -308,7 +308,7 @@ def draw_property_layers(
 
         return style_callable
 
-    property_layers = space._property_layers
+    property_layers = space.property_layers
 
     callable_portrayal: Callable[[Any], PropertyLayerStyle | None]
     if isinstance(property_layer_portrayal, dict):

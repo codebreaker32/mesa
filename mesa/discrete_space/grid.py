@@ -41,7 +41,7 @@ def unpickle_gridcell(parent, fields):
     cell_klass = type(
         "GridCell",
         (parent,),
-        {"_property_layers": set(), "__slots__": ()},
+        {"property_layers": set(), "__slots__": ()},
     )
     instance = cell_klass(
         (0, 0)
@@ -106,9 +106,9 @@ class Grid(DiscreteSpace[T]):
         self.cell_klass = type(
             "GridCell",
             (self.cell_klass,),
-            {"_property_layers": set(), "__slots__": ()},
+            {"property_layers": set(), "__slots__": ()},
         )
-        self._property_layers: dict[str, np.ndarray] = {}
+        self.property_layers: dict[str, np.ndarray] = {}
 
         # we register the pickle_gridcell helper function
         copyreg.pickle(self.cell_klass, pickle_gridcell)
@@ -126,8 +126,8 @@ class Grid(DiscreteSpace[T]):
     def __getattr__(self, name: str) -> np.ndarray:
         """Allow direct _property_layer access via attribute lookup on the grid.
 
-        Looks up `name` in `_property_layers` enabling `grid.sugar`
-        as a shorthand for `grid._property_layers["sugar"]`.
+        Looks up `name` in `property_layers` enabling `grid.sugar`
+        as a shorthand for `grid.property_layers["sugar"]`.
 
         Note:
             `grid.sugar` returns the full NumPy array while `cell.sugar` returns
@@ -143,10 +143,10 @@ class Grid(DiscreteSpace[T]):
         Raises:
             AttributeError: If no property layer with that name exists.
         """
-        if name == "_property_layers":  # guard against recursion during __init__
+        if name == "property_layers":  # guard against recursion during __init__
             raise AttributeError(name)
         try:
-            return self._property_layers[name]
+            return self.property_layers[name]
         except KeyError as e:
             raise AttributeError(f"No property_layer named '{name}' exists") from e
 
@@ -178,11 +178,11 @@ class Grid(DiscreteSpace[T]):
         Args:
             name: property_layer name.
         """
-        if name not in self._property_layers:
+        if name not in self.property_layers:
             raise KeyError(f"No property_layer named '{name}'.")
-        del self._property_layers[name]
+        del self.property_layers[name]
         delattr(self.cell_klass, name)
-        self.cell_klass._property_layers.discard(name)
+        self.cell_klass.property_layers.discard(name)
 
     def _attach_property_layer(
         self, name: str, array: np.ndarray, read_only: bool = False
@@ -194,7 +194,7 @@ class Grid(DiscreteSpace[T]):
                 f"property_layer '{name}' conflicts with an existing Grid attribute."
             )
 
-        if name in self._property_layers:
+        if name in self.property_layers:
             raise ValueError(f"property_layer '{name}' already exists.")
 
         slots = set(
@@ -206,7 +206,7 @@ class Grid(DiscreteSpace[T]):
             raise ValueError(
                 f"property_layer name '{name}' clashes with existing slot '{name}'."
             )
-        self._property_layers[name] = array
+        self.property_layers[name] = array
 
         def getter(self_cell):
             return array[self_cell.coordinate]
@@ -220,7 +220,7 @@ class Grid(DiscreteSpace[T]):
             else property(getter, setter, doc=f"property_layer '{name}'")
         )
         setattr(self.cell_klass, name, accessor)
-        self.cell_klass._property_layers.add(name)
+        self.cell_klass.property_layers.add(name)
 
     def get_neighborhood_mask(
         self, coordinate, include_center: bool = True, radius: int = 1
@@ -302,7 +302,7 @@ class Grid(DiscreteSpace[T]):
                 if cell.is_empty:
                     return cell
 
-        empty_coords = np.argwhere(self._property_layers["empty"])
+        empty_coords = np.argwhere(self.property_layers["empty"])
         random_coord = self.random.choice(empty_coords)
         return self._cells[tuple(random_coord)]
 
@@ -336,7 +336,7 @@ class Grid(DiscreteSpace[T]):
     def __setstate__(self, state: dict[str, Any]) -> None:
         """Restore state and re-attach property_layer accessors to the cell class."""
         super().__setstate__(state)
-        for name, array in self._property_layers.items():
+        for name, array in self.property_layers.items():
             setattr(
                 self.cell_klass,
                 name,

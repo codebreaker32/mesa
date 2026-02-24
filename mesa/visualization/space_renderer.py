@@ -334,7 +334,7 @@ class SpaceRenderer:
 
             return style_callable
 
-        property_layers = self.space._property_layers
+        property_layers = self.space.property_layers
 
         # Convert portrayal to callable if needed
         if isinstance(self.property_layer_portrayal, dict):

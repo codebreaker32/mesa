@@ -229,7 +229,7 @@ def chart_property_layers(space, property_layer_portrayal, chart_width, chart_he
     Returns:
         Altair Chart
     """
-    property_layers = space._property_layers
+    property_layers = space.property_layers
     base = None
     bar_chart = None
     for layer_name, portrayal in property_layer_portrayal.items():
