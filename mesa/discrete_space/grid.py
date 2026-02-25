@@ -123,33 +123,6 @@ class Grid(DiscreteSpace[T]):
         self._connect_cells()
         self.create_property_layer("empty", default_value=True, dtype=bool)
 
-    def __getattr__(self, name: str) -> np.ndarray:
-        """Allow direct _property_layer access via attribute lookup on the grid.
-
-        Looks up `name` in `property_layers` enabling `grid.sugar`
-        as a shorthand for `grid.property_layers["sugar"]`.
-
-        Note:
-            `grid.sugar` returns the full NumPy array while `cell.sugar` returns
-            a scalar — same name, different granularity.
-
-        Example:
-            >>> grid.create_property_layer("sugar", default_value=0.0)
-            >>> grid.sugar                      # np.ndarray shape (width, height)
-            >>> grid.sugar[10, 5]               # scalar at coordinate (10, 5)
-            >>> grid.sugar[:] = 0              # reset all values
-            >>> grid.sugar[grid.sugar > 4] = 4  # cap in-place
-
-        Raises:
-            AttributeError: If no property layer with that name exists.
-        """
-        if name == "property_layers":  # guard against recursion during __init__
-            raise AttributeError(name)
-        try:
-            return self.property_layers[name]
-        except KeyError as e:
-            raise AttributeError(f"No property_layer named '{name}' exists") from e
-
     def create_property_layer(
         self,
         name: str,
@@ -157,7 +130,15 @@ class Grid(DiscreteSpace[T]):
         dtype=float,
         read_only: bool = False,
     ) -> np.ndarray:
-        """Create a property layer array and attach it to cells."""
+        """Create a property layer array and attach it to cells.
+
+        Warning:
+        Do not reassign `grid.name` directly — this will detach it from
+        `property_layers` and break cell-level access. Use in-place operations.
+
+            grid.sugar[:] = 0    # correct
+            grid.sugar = array   # wrong — breaks cell access
+        """
         array = np.full(self.dimensions, default_value, dtype=dtype)
         self._attach_property_layer(name, array, read_only=read_only)
         return array
@@ -165,7 +146,15 @@ class Grid(DiscreteSpace[T]):
     def add_property_layer(
         self, name: str, array: np.ndarray, read_only: bool = False
     ) -> None:
-        """Attach an existing array as a property layer.  Shape must match `self.dimensions`."""
+        """Attach an existing array as a property layer.  Shape must match `self.dimensions`.
+
+        Warning:
+        Do not reassign `grid.name` directly — this will detach it from
+        `property_layers` and break cell-level access. Use in-place operations.
+
+            grid.sugar[:] = 0    # correct
+            grid.sugar = array   # wrong — breaks cell access
+        """
         if tuple(array.shape) != tuple(self.dimensions):
             raise ValueError(
                 f"Array shape {array.shape} does not match grid dimensions {self.dimensions}."
@@ -207,6 +196,7 @@ class Grid(DiscreteSpace[T]):
                 f"property_layer name '{name}' clashes with existing slot '{name}'."
             )
         self.property_layers[name] = array
+        setattr(self, name, array)
 
         def getter(self_cell):
             return array[self_cell.coordinate]
