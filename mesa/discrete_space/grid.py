@@ -161,14 +161,14 @@ class Grid(DiscreteSpace[T], HasPropertyLayers):
             self._connect_cells_nd()
 
     def _connect_cells_2d(self) -> None:
-        raise NotImplementedError(
+        raise NotImplementedError(  # pragma: no cover
             f"{type(self).__name__} does not implement _connect_cells_2d(). "
-        )  # pragma : no cover
+        )
 
     def _connect_cells_nd(self) -> None:
-        raise NotImplementedError(
+        raise NotImplementedError(  # pragma: no cover
             f"{type(self).__name__} does not implement _connect_cells_nd(). "
-        )  # pragma : no cover
+        )
 
     def _validate_parameters(self):
         if not all(isinstance(dim, int) and dim > 0 for dim in self.dimensions):
