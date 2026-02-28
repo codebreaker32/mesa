@@ -112,8 +112,8 @@ class SugarscapeG1mt(mesa.Model):
         Unique step function that does staged activation of sugar and spice
         and then randomly activates traders
         """
-        self.sugar  = np.minimum(self.sugar+1, self.sugar_distribution)
-        self.spice = np.minimum(self.spice+1, self.spice_distribution)
+        self.sugar = np.minimum(self.sugar + 1, self.sugar_distribution)
+        self.spice = np.minimum(self.spice + 1, self.spice_distribution)
 
         # step trader agents
         # to account for agent death and removal we need a separate data structure to
