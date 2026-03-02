@@ -6,7 +6,7 @@ import math
 from collections.abc import Callable
 from weakref import WeakKeyDictionary
 
-from mesa.experimental.mesa_signals.core import BaseObservable, HasObservables
+from mesa.experimental.mesa_signals.core import BaseObservable, HasEmitters
 from mesa.experimental.mesa_signals.signals_util import SignalType
 
 
@@ -24,7 +24,7 @@ class BehavioralState(BaseObservable):
     or callable(current_value, elapsed) -> delta for custom curves.
 
     Example:
-        >>> class Animal(Agent, HasObservables):
+        >>> class Animal(Agent, HasEmitters):
         ...     energy = BehavioralState(
         ...         initial_value=100,
         ...         decay_rate=-1.5,
@@ -53,7 +53,7 @@ class BehavioralState(BaseObservable):
             WeakKeyDictionary()
         )  # avoids memory leaks on agent removal
 
-    def _get_state(self, instance: HasObservables) -> _StateInstance:
+    def _get_state(self, instance: HasEmitters) -> _StateInstance:
         if instance not in self._instance_values:
             current_time = self._get_current_time(instance)
             self._instance_values[instance] = _StateInstance(
@@ -63,9 +63,7 @@ class BehavioralState(BaseObservable):
             )
         return self._instance_values[instance]
 
-    def __get__(
-        self, instance: HasObservables | None, owner
-    ) -> float | BehavioralState:
+    def __get__(self, instance: HasEmitters | None, owner) -> float | BehavioralState:
         if instance is None:
             return self
 
@@ -108,7 +106,7 @@ class BehavioralState(BaseObservable):
 
         return state.value
 
-    def __set__(self, instance: HasObservables, value: float) -> None:
+    def __set__(self, instance: HasEmitters, value: float) -> None:
         state = self._get_state(instance)
         current_time = self._get_current_time(instance)
         old_value = state.value
@@ -158,13 +156,13 @@ class BehavioralState(BaseObservable):
                 crossed.append((threshold, label, "up"))
         return crossed
 
-    def _get_current_time(self, instance: HasObservables) -> float:
+    def _get_current_time(self, instance: HasEmitters) -> float:
         try:
             return float(instance.model.time)
         except (AttributeError, TypeError):
             return 0.0
 
-    def get_history(self, instance: HasObservables) -> list[tuple[float, float]] | None:
+    def get_history(self, instance: HasEmitters) -> list[tuple[float, float]] | None:
         if not self.track_history:
             return None
         state = self._get_state(instance)
