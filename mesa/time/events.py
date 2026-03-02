@@ -400,16 +400,25 @@ class EventList:
             raise IndexError("event list is empty")
 
         # Filter out canceled events and get n smallest in correct chronological order
-        valid_events = [e for e in self._events if not e.CANCELED]
-        return nsmallest(n, valid_events)
+        return nsmallest(n, (e for e in self._events if not e.CANCELED))
 
     def pop_event(self) -> Event:
         """Pop the first element from the event list."""
         while self._events:
             event = heappop(self._events)
+
             if not event.CANCELED:
                 return event
+
         raise IndexError("Event list is empty")
+
+    def compact(self) -> None:
+        """Remove all canceled events from the heap and rebuild it.
+
+        If there are many canceled events, compaction can speed up performance substantially.
+        """
+        self._events = [e for e in self._events if not e.CANCELED]
+        heapify(self._events)
 
     def is_empty(self) -> bool:
         """Return whether the event list is empty."""
@@ -441,11 +450,12 @@ class EventList:
             event (Event): The event to be removed
 
         """
-        # we cannot simply remove items from _eventlist because this breaks
-        # heap structure invariant. So, we use a form of lazy deletion.
-        # SimEvents have a CANCELED flag that we set to True, while popping and peek_ahead
-        # silently ignore canceled events
-        event.cancel()
+        # We use lazy deletion: mark the event as canceled without
+        # removing it from the heap to preserve heap invariants.
+        # Canceled events are skipped during pop and may trigger
+        # adaptive compaction if they dominate the heap.
+        if not event.CANCELED:
+            event.cancel()
 
     def clear(self):
         """Clear the event list."""
