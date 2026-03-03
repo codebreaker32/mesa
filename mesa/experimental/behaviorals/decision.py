@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
-from mesa.time import Priority
 from .task import Task, TaskManager
 
 
@@ -159,12 +158,22 @@ class DecisionSystem:
 
         return None
 
+    def _get_task_id(self, task: Task) -> str:
+        """Get unique identifier for a task's action."""
+        if task.action is not None:
+            return getattr(task.action, "__name__", str(task.action))
+        # For subclassed tasks without action, use class name
+        return task.__class__.__name__
+
     def _is_duplicate(self, task: Task) -> bool:
         """Prevent scheduling same action twice."""
+        task_id = self._get_task_id(task)
+        
         current = self.task_manager.current_task
-        if current and current.action.__name__ == task.action.__name__:
+        if current and self._get_task_id(current) == task_id:
             return True
-        return any(q.action.__name__ == task.action.__name__ for q in self.task_manager.task_queue)
+        
+        return any(self._get_task_id(q) == task_id for q in self.task_manager.task_queue)
 
     def get_stats(self) -> dict[str, Any]:
         return {
