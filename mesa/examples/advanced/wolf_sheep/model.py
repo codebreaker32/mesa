@@ -14,8 +14,9 @@ import math
 from mesa import Model
 from mesa.datacollection import DataCollector
 from mesa.discrete_space import OrthogonalVonNeumannGrid
-from mesa.examples.advanced.wolf_sheep.agents import GrassPatch, Sheep, Wolf
+from mesa.examples.advanced.wolf_sheep.beh_agents import GrassPatch, Sheep, Wolf
 from mesa.experimental.scenarios import Scenario
+from mesa.experimental.data_collection import DataRecorder
 
 
 class WolfSheepScenario(Scenario):
@@ -38,7 +39,7 @@ class WolfSheepScenario(Scenario):
 
     width: int = 20
     height: int = 20
-    initial_sheep: int = 100
+    initial_sheep: int = 200
     initial_wolves: int = 50
     sheep_reproduce: float = 0.04
     wolf_reproduce: float = 0.05
@@ -57,6 +58,18 @@ class WolfSheep(Model):
     description = (
         "A model for simulating wolf and sheep (predator-prey) ecosystem modelling."
     )
+
+    @property
+    def count_wolves(self) -> int:
+        return len(self.agents_by_type[Wolf])
+
+    @property
+    def count_sheep(self) -> int:
+        return len(self.agents_by_type[Sheep])
+
+    @property
+    def count_grass(self) -> int:
+        return len(self.agents_by_type[GrassPatch].select(lambda a: a.fully_grown))
 
     def __init__(self, scenario=None):
         """Create a new Wolf-Sheep model with the given parameters.
@@ -82,19 +95,13 @@ class WolfSheep(Model):
             random=self.random,
         )
 
-        # Set up data collection
-        model_reporters = {
-            "Wolves": lambda m: len(m.agents_by_type[Wolf]),
-            "Sheep": lambda m: len(m.agents_by_type[Sheep]),
-        }
+        tracked_fields = ["count_wolves", "count_sheep"]
         if self.grass:
-            model_reporters["Grass"] = lambda m: len(
-                m.agents_by_type[GrassPatch].select(lambda a: a.fully_grown)
-            )
+            tracked_fields.append("count_grass")
 
-        self.datacollector = DataCollector(model_reporters)
+        self.recorder = DataRecorder(self)
+        self.data_registry.track_model(self, "model_data", fields=tracked_fields).record(self.recorder)
 
-        # Create sheep:
         Sheep.create_agents(
             self,
             scenario.initial_sheep,
@@ -135,13 +142,3 @@ class WolfSheep(Model):
 
         # Collect initial data
         self.running = True
-        self.datacollector.collect(self)
-
-    def step(self):
-        """Execute one step of the model."""
-        # First activate all sheep, then all wolves, both in random order
-        self.agents_by_type[Sheep].shuffle_do("step")
-        self.agents_by_type[Wolf].shuffle_do("step")
-
-        # Collect data
-        self.datacollector.collect(self)
