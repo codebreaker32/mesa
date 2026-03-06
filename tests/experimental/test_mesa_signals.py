@@ -572,6 +572,50 @@ def test_emit():
     )
 
 
+def test_computed_property_dependencies():
+    """Test that @computed_property can use dependencies to track @emit."""
+
+    class MockAgent(Agent, HasEmitters):
+        def __init__(self, model):
+            super().__init__(model)
+            self.count = 0
+            self.payload = None
+
+        @emit("test", "test_signal")
+        def fire_event(self, payload):
+            self.payload = payload
+
+        @computed_property(dependencies=[("test", "test_signal")])
+        def reactive_state(self):
+            self.count += 1
+            return f"Processed: {self.payload}"
+
+    model = Model(rng=42)
+    agent = MockAgent(model)
+
+    # Triggers computation and wires the dependency
+    assert agent.count == 0
+    res1 = agent.reactive_state
+    assert agent.count == 1
+    assert res1 == "Processed: None"
+
+    # Should use cached value, bypassing the function
+    res2 = agent.reactive_state
+    assert agent.count == 1
+    assert res2 == "Processed: None"
+
+    agent.fire_event("Hello World")
+
+    # Post-Event Access: Must recalculate
+    res3 = agent.reactive_state
+    assert agent.count == 2
+    assert res3 == "Processed: Hello World"
+
+    # cached Access Again
+    _ = agent.reactive_state
+    assert agent.count == 2
+
+
 def test_ObservableList_negative_index_normalization():
     """Test that __setitem__ with negative index emits normalized positive index."""
 
