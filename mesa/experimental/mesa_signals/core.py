@@ -158,8 +158,20 @@ class ComputedState:
     ]
 
     def __init__(
-        self, owner: HasEmitters, name: str, func: Callable, dependencies=None
+        self,
+        owner: HasEmitters,
+        name: str,
+        func: Callable,
+        dependencies: Iterable[tuple[str, str | SignalType]] | None = None,
     ):
+        """Initialize a ComputedState.
+
+        Args:
+            owner: the HasEmitters instance on which this state is defined
+            name: the name of the computed property
+            func: the computation function
+            dependencies: optional iterable of explicit dependencies to track
+        """
         self.owner = owner
         self.name = name
         self.func = func
@@ -218,11 +230,19 @@ class ComputedProperty(property):
     signal_types = ObservableSignals
 
 
-def computed_property(func: Callable | None = None, *, dependencies=None) -> property:
+def computed_property(
+    func: Callable | None = None,
+    *,
+    dependencies: Iterable[tuple[str, str | SignalType]] | None = None,
+) -> property:
     """Decorator to create a computed property.
 
     Acts like @property, but automatically tracks dependencies (Observables)
     accessed during the function execution.
+
+    Args:
+        func: The function to be decorated.
+        dependencies: Optional iterable of (observable_name, signal_type) tuples to explicitly track.
     """
 
     def decorator(computation_func):
@@ -234,7 +254,10 @@ def computed_property(func: Callable | None = None, *, dependencies=None) -> pro
 
             if not hasattr(self, key):
                 state = ComputedState(
-                    self, computation_func.__name__, computation_func, dependencies
+                    self,
+                    computation_func.__name__,
+                    computation_func,
+                    dependencies=dependencies,
                 )
                 setattr(self, key, state)
             else:
