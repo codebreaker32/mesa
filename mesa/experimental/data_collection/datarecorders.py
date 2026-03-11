@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from .basedatarecorder import BaseDataRecorder, DatasetConfig
+from .dataset import AgentDataSet, ModelDataSet, NumpyAgentDataSet
 
 if TYPE_CHECKING:
     from mesa.model import Model
@@ -75,6 +76,8 @@ class DataRecorder(BaseDataRecorder):
         storage = self.storage[dataset_name]
         config = self.configs[dataset_name]
 
+        dataset = self.registry.datasets[dataset_name]
+
         old_data = None
         if is_overwrite and storage.blocks:
             _, old_data = storage.blocks.pop()
@@ -83,11 +86,9 @@ class DataRecorder(BaseDataRecorder):
 
         added_bytes = 0
 
-        match data:
-            case np.ndarray():
+        match dataset:
+            case NumpyAgentDataSet():
                 if data.size > 0:
-                    ids = None
-                    dataset = self.registry.datasets[dataset_name]
                     ids = getattr(dataset, "agent_ids", None)
                     ids_col = ids.reshape(-1, 1)
                     data_to_store = np.hstack([ids_col, data])
@@ -100,27 +101,28 @@ class DataRecorder(BaseDataRecorder):
                     if "type" not in storage.metadata:
                         storage.metadata["type"] = "numpyagentdataset"
                         storage.metadata["dtype"] = data.dtype
-                        dataset = self.registry.datasets[dataset_name]
                         storage.metadata["columns"] = list(dataset._attributes)
 
-            case list():
+            case AgentDataSet():
                 if data:
                     storage.blocks.append((time, data))
-                    storage.total_rows += len(data)
-                    added_bytes = len(data) * 100
+
+                    first_col = next(iter(data.values())) if data else []
+                    storage.total_rows += len(first_col)
+                    added_bytes = len(first_col) * len(data) * 8
 
                     if "type" not in storage.metadata:
                         storage.metadata["type"] = "agentdataset"
-                        storage.metadata["columns"] = list(data[0].keys())
+                        storage.metadata["columns"] = list(dataset._attributes)
 
-            case dict():
+            case ModelDataSet():
                 storage.blocks.append((time, data))
                 storage.total_rows += 1
                 added_bytes = 100
 
                 if "type" not in storage.metadata:
                     storage.metadata["type"] = "modeldataset"
-                    storage.metadata["columns"] = list(data.keys())
+                    storage.metadata["columns"] = list(dataset._attributes)
 
             case _:
                 storage.blocks.append((time, data))
@@ -132,16 +134,14 @@ class DataRecorder(BaseDataRecorder):
 
         # Update bookkeeping for evicted data
         if old_data is not None:
-            match old_data:
-                case np.ndarray():
+            match dataset:
+                case NumpyAgentDataSet():
                     storage.total_rows -= len(old_data)
                     storage.estimated_size_bytes -= old_data.nbytes
-                case list():
-                    storage.total_rows -= len(old_data)
-                    storage.estimated_size_bytes -= len(old_data) * 100
-                case dict():
-                    storage.total_rows -= 1
-                    storage.estimated_size_bytes -= 100
+                case AgentDataSet():
+                    first_col = next(iter(old_data.values())) if old_data else []
+                    storage.total_rows -= len(first_col)
+                    storage.estimated_size_bytes -= len(first_col) * len(old_data) * 8
                 case _:
                     storage.total_rows -= 1
                     storage.estimated_size_bytes -= 100
@@ -213,16 +213,23 @@ class DataRecorder(BaseDataRecorder):
         return df
 
     def _convert_agentDataSet(self, storage: DatasetStorage) -> pd.DataFrame:
-        """Convert list-of-dicts blocks to DataFrame."""
-        rows = []
+        """Convert dict-of-lists blocks to DataFrame."""
+        df_list = []
         for time, block in storage.blocks:
-            for row in block:
-                rows.append({**row, "time": time})
+            first_col = next(iter(block.values())) if block else []
+            if not first_col:
+                continue
 
-        if not rows:
-            return pd.DataFrame(columns=[*storage.metadata.get("columns", []), "time"])
+            # copy to avoid mutating
+            block_copy = dict(block)
+            block_copy["time"] = [time] * len(first_col)
+            df_list.append(pd.DataFrame(block_copy))
 
-        return pd.DataFrame(rows)
+        if not df_list:
+            columns = storage.metadata.get("columns", [])
+            return pd.DataFrame(columns=[*columns, "time"])
+
+        return pd.concat(df_list, ignore_index=True)
 
     def _convert_modelDataSet(self, storage: DatasetStorage) -> pd.DataFrame:
         """Convert model dict blocks to DataFrame."""
@@ -330,13 +337,13 @@ class JSONDataRecorder(BaseDataRecorder):
         if is_overwrite and self.data[dataset_name]:
             self.data[dataset_name].pop()
 
-        match data:
-            case dict():
-                self.data[dataset_name].append({"time": time, "data": data})
-            case list():
-                self.data[dataset_name].append({"time": time, "data": data})
-            case np.ndarray():
+        dataset = self.registry.datasets[dataset_name]
+
+        match dataset:
+            case NumpyAgentDataSet():
                 self.data[dataset_name].append({"time": time, "data": data.tolist()})
+            case AgentDataSet() | ModelDataSet():
+                self.data[dataset_name].append({"time": time, "data": data})
             case _:
                 self.data[dataset_name].append({"time": time, "data": data})
 
@@ -345,20 +352,39 @@ class JSONDataRecorder(BaseDataRecorder):
         if name not in self.data:
             raise KeyError(f"Dataset '{name}' not found")
 
+        dataset = self.registry.datasets.get(name)
         records = []
-        for snapshot in self.data[name]:
-            time = snapshot["time"]
-            data = snapshot["data"]
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                for row in data:
-                    records.append({**row, "time": time})
-            elif isinstance(data, dict):
-                records.append({**data, "time": time})
-            else:
-                # Handle scalar or simple list
-                records.append({"time": time, "value": data})
+        df_list = []
+        snapshots = self.data[name]
 
-        return pd.DataFrame(records) if records else pd.DataFrame()
+        match dataset:
+            case AgentDataSet():
+                for snapshot in snapshots:
+                    time = snapshot["time"]
+                    data = snapshot["data"]
+
+                    first_val = next(iter(data.values())) if data else None
+                    block_copy = dict(data)
+                    block_copy["time"] = [time] * len(first_val)
+                    df_list.append(pd.DataFrame(block_copy))
+
+            case ModelDataSet():
+                for snapshot in snapshots:
+                    data = snapshot["data"]
+                    records.append({**data, "time": snapshot["time"]})
+
+            case _:
+                # Fallback for custom datasets, Numpy, or scalars
+                for snapshot in snapshots:
+                    time = snapshot["time"]
+                    data = snapshot["data"]
+                    records.append({"time": time, "value": data})
+        if df_list:
+            return pd.concat(df_list, ignore_index=True)
+        elif records:
+            return pd.DataFrame(records)
+
+        return pd.DataFrame()
 
     def clear(self, dataset_name: str | None = None) -> None:
         """Clear data."""
@@ -437,25 +463,32 @@ class ParquetDataRecorder(BaseDataRecorder):
                 df = df[df["time"] != time]  # Drop the overwritten rows
                 df.to_parquet(filepath, index=False, compression="snappy")
 
-        match data:
-            case np.ndarray() if data.size > 0:
-                dataset = self.registry.datasets[dataset_name]
-                columns = list(dataset._attributes)
-                ids = dataset.agent_ids
+        dataset = self.registry.datasets[dataset_name]
 
-                data_to_store = data
-                ids_col = ids.reshape(-1, 1)
-                data_to_store = np.hstack([ids_col, data])
-                columns = ["agent_id", *columns]
+        match dataset:
+            case NumpyAgentDataSet():
+                if data.size > 0:
+                    columns = list(dataset._attributes)
+                    ids = dataset.agent_ids
 
-                df = pd.DataFrame(data_to_store, columns=columns)
-                df["time"] = time
-                buffer.extend(df.to_dict("records"))
+                    data_to_store = data
+                    ids_col = ids.reshape(-1, 1)
+                    data_to_store = np.hstack([ids_col, data])
+                    columns = ["agent_id", *columns]
 
-            case list() if data:
-                buffer.extend([{**row, "time": time} for row in data])
+                    df = pd.DataFrame(data_to_store, columns=columns)
+                    df["time"] = time
+                    buffer.extend(df.to_dict("records"))
 
-            case dict():
+            case AgentDataSet():
+                if data:
+                    first_col = next(iter(data.values())) if data else []
+                    if first_col:
+                        df = pd.DataFrame(data)
+                        df["time"] = time
+                        buffer.extend(df.to_dict("records"))
+
+            case ModelDataSet():
                 buffer.append({**data, "time": time})
 
         # Flush to disk if buffer is full
@@ -583,13 +616,17 @@ class SQLDataRecorder(BaseDataRecorder):
         if is_overwrite and self.metadata[dataset_name]["table_created"]:
             self.conn.execute(f'DELETE FROM "{dataset_name}" WHERE time = ?', (time,))  # noqa: S608
 
-        match data:
-            case np.ndarray() if data.size > 0:
-                self._store_numpy_data(dataset_name, time, data)
-            case list() if data:
-                self._store_list_data(dataset_name, time, data)
-            case dict():
-                self._store_dict_data(dataset_name, time, data)
+        dataset = self.registry.datasets[dataset_name]
+
+        match dataset:
+            case NumpyAgentDataSet():
+                if data.size > 0:
+                    self._store_numpy_data(dataset_name, time, data)
+            case AgentDataSet():
+                if data:
+                    self._store_agent_data(dataset_name, time, data)
+            case ModelDataSet():
+                self._store_model_data(dataset_name, time, data)
             case _:
                 pass
 
@@ -617,10 +654,10 @@ class SQLDataRecorder(BaseDataRecorder):
         df["time"] = time
         df.to_sql(dataset_name, self.conn, if_exists="append", index=False)
 
-    def _store_list_data(self, dataset_name: str, time: int | float, data: list[dict]):
-        """Store list of dicts as SQL records."""
+    def _store_agent_data(self, dataset_name: str, time: int | float, data: dict):
+        """Store dict of lists as SQL records."""
         if not self.metadata[dataset_name]["table_created"]:
-            columns = [k for k in data[0] if k != "time"]
+            columns = [k for k in data if k != "time"]
             col_defs = ", ".join([f'"{col}" REAL' for col in columns])
             self.conn.execute(
                 f'CREATE TABLE IF NOT EXISTS "{dataset_name}" (time REAL, {col_defs})'
@@ -628,12 +665,12 @@ class SQLDataRecorder(BaseDataRecorder):
             self.metadata[dataset_name]["table_created"] = True
             self.metadata[dataset_name]["columns"] = columns
 
-        rows = [{**row, "time": time} for row in data]
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(data)
+        df["time"] = time
         df.to_sql(dataset_name, self.conn, if_exists="append", index=False)
 
-    def _store_dict_data(self, dataset_name: str, time: int | float, data: dict):
-        """Store single dict as SQL record."""
+    def _store_model_data(self, dataset_name: str, time: int | float, data: dict):
+        """Store model data as SQL record."""
         if not self.metadata[dataset_name]["table_created"]:
             columns = [k for k in data if k != "time"]
             col_defs = ", ".join([f'"{col}" REAL' for col in columns])

@@ -139,15 +139,18 @@ class AgentDataSet[A: Agent](BaseDataSet):
         self._cache: list[dict[str, Any]] | None = None
 
     @property
-    def data(self) -> list[dict[str, Any]]:
+    def data(self) -> dict[str, Any]:
         """Return the data of the dataset."""
         self._check_closed()
 
         if (not self._use_dirty_flag) or self._is_dirty or self._cache is None:
-            snapshot = [
-                dict(zip(self._attributes, self._collector(agent)))
-                for agent in self.agents
-            ]
+            rows = [self._collector(agent) for agent in self.agents]
+
+            if not rows:
+                snapshot = {attr: [] for attr in self._attributes}
+            else:
+                transposed = zip(*rows)
+                snapshot = dict(zip(self._attributes, transposed))
 
             if not self._use_dirty_flag:
                 return snapshot

@@ -93,7 +93,7 @@ def test_data_registry_track():
     assert "agent_data" in registry
     assert "model_data" in registry
 
-    assert len(agent_dataset.data) == 10
+    assert len(agent_dataset.data) == 2
     assert len(model_dataset.data) == 1
 
 
@@ -138,11 +138,7 @@ def test_agent_dataset():
     assert isinstance(dataset, DataSet)
 
     values = dataset.data
-    assert len(values) == n
-
-    single_agent = values[0]
-    assert "unique_id" in single_agent
-    assert "test" in single_agent
+    assert len(values) == 2
 
     dataset.close()
     assert dataset._closed
@@ -152,12 +148,7 @@ def test_agent_dataset():
 
     dataset = AgentDataSet("test", model.agents, fields=["test", "second_attribute"])
     values = dataset.data
-    assert len(values) == n
-
-    single_agent = values[0]
-    assert "unique_id" in single_agent
-    assert "test" in single_agent
-    assert "second_attribute" in single_agent
+    assert len(values) == 3
 
     dataset.close()
     with pytest.raises(RuntimeError):
@@ -467,7 +458,7 @@ def test_agent_dataset_dirty_flag():
     agent.wealth = 999
 
     third = dataset.data
-    assert third[0]["wealth"] == 999
+    assert third["wealth"][0] == 999
 
     dataset.close()
 
@@ -487,13 +478,13 @@ def test_agent_dataset_dirty_flag():
 
     third = dataset.data
     assert third is first
-    assert third[0]["wealth"] != 1234
+    assert third["wealth"][0] != 1234
 
     dataset.set_dirty_flag()
     fourth = dataset.data
 
     assert fourth is not first
-    assert fourth[0]["wealth"] == 1234
+    assert fourth["wealth"][0] == 1234
 
     dataset.close()
     with pytest.raises(RuntimeError):

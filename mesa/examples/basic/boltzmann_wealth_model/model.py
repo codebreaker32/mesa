@@ -18,7 +18,7 @@ from mesa.experimental.scenarios import Scenario
 class BoltzmannScenario(Scenario):
     """Scenario parameters for the Boltzmann Wealth model."""
 
-    n: int = 100
+    n: int = 1000
     width: int = 10
     height: int = 10
 
@@ -95,5 +95,19 @@ class BoltzmannWealth(Model):
         x = sorted(agent_wealths)
         n = self.num_agents
         # Calculate using the standard formula for Gini coefficient
+        if sum(x) == 0:
+            return 0
         b = sum(xi * (n - i) for i, xi in enumerate(x)) / (n * sum(x))
         return 1 + (1 / n) - 2 * b
+
+
+if __name__ == "__main__":
+    import time
+
+    model = BoltzmannWealth()
+    start_time = time.perf_counter()
+    model.run_for(100)
+    df = model.recorder.get_table_dataframe("agent_data")
+    end_time = time.perf_counter()
+    total_time = end_time - start_time
+    print(f"Total time: {total_time:.4f} seconds")

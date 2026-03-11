@@ -246,8 +246,8 @@ def test_data_recorder_empty_numpy_array():
     assert len(df) == 0
 
 
-def test_data_recorder_empty_list():
-    """Test storing empty list (no agents)."""
+def test_data_recorder_empty_agent_dataset():
+    """Test storing empty agent dataset (no agents)."""
     model = Model()
     model.data_registry = DataRegistry()
     recorder = DataRecorder(model)
@@ -279,8 +279,8 @@ def test_data_recorder_window_eviction_numpy():
     assert len(storage.blocks) == 2
 
 
-def test_data_recorder_window_eviction_list():
-    """Test window eviction bookkeeping for list data."""
+def test_data_recorder_window_eviction_agent_dataset():
+    """Test window eviction bookkeeping for agent data."""
     model = MockModel(n=5)
     recorder = DataRecorder(model, config={"agent_data": DatasetConfig(window_size=2)})
     recorder.clear()
@@ -294,8 +294,8 @@ def test_data_recorder_window_eviction_list():
     assert len(storage.blocks) == 2
 
 
-def test_data_recorder_window_eviction_dict():
-    """Test window eviction bookkeeping for dict data."""
+def test_data_recorder_window_eviction_model_dataset():
+    """Test window eviction bookkeeping for model dataset."""
     model = MockModel(n=5)
     recorder = DataRecorder(model, config={"model_data": DatasetConfig(window_size=2)})
     recorder.clear()
@@ -748,8 +748,8 @@ def test_parquet_recorder_cleanup_on_delete():
         assert filepath.exists()
 
 
-def test_parquet_recorder_dict_data_storage():
-    """Test storing dict data (model data) in parquet."""
+def test_parquet_recorder_model_data_storage():
+    """Test storing model dataset in parquet."""
     pytest.importorskip("pyarrow")
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -774,8 +774,8 @@ def test_parquet_recorder_dict_data_storage():
         assert "time" in df.columns
 
 
-def test_parquet_recorder_list_data_storage():
-    """Test storing list data (agent data) in parquet."""
+def test_parquet_recorder_agent_data_storage():
+    """Test storing agent data in parquet."""
     pytest.importorskip("pyarrow")
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -821,8 +821,8 @@ def test_sql_recorder_store_empty_numpy():
     assert len(df) == 0
 
 
-def test_sql_recorder_store_empty_list():
-    """Test SQL recorder with empty list."""
+def test_sql_recorder_store_empty_agent_dataset():
+    """Test SQL recorder with empty agent dataset."""
     model = Model()
     model.data_registry = DataRegistry()
 
