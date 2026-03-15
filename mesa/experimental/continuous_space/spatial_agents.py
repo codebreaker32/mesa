@@ -66,7 +66,7 @@ class SpatialAgent(ContinuousSpaceAgent):
             space.move_agent(self, value)
 
     @property
-    def positions(self):
+    def locations(self):
         return self._agent_locations
 
     def add_to_space(self, spaces):

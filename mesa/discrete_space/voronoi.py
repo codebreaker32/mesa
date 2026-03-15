@@ -15,6 +15,7 @@ divisions, like territories, service areas, or natural regions.
 from collections.abc import Sequence
 from itertools import combinations
 from random import Random
+from typing import Any
 
 import numpy as np
 from scipy.spatial import KDTree
