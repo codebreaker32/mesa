@@ -1,16 +1,4 @@
-# Posts comments and manages labels based on results from pr-triage.yml.
-#
-# Mirrors the benchmarks-comment.yml pattern:
-#   - pr-triage.yml   runs on `pull_request` (read-only, safe for forks)
-#                     and uploads triage_result.json as an artifact.
-#   - This workflow   runs on `workflow_run` after pr-triage.yml completes,
-#                     has write permissions, downloads the artifact, and
-#                     applies comments / labels / closes the PR if needed.
-#
-# The separation is the key security property: untrusted fork code never
-# runs in a context that has write access to the base repo.
-
-name: PR Triage — Comment
+name: PR Triage - Comment
 
 on:
   workflow_run:
@@ -26,8 +14,6 @@ jobs:
   comment:
     name: Apply triage results
     runs-on: ubuntu-latest
-    # Run regardless of whether the triage checks passed or failed —
-    # we always want to post the result comment.
     if: >
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion != 'cancelled'
@@ -44,17 +30,14 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs     = require('fs');
+            const fs = require('fs');
             const { owner, repo } = context.repo;
 
             const prNumber = parseInt(fs.readFileSync('pr_number.txt', 'utf8').trim(), 10);
             const result   = JSON.parse(fs.readFileSync('triage_result.json', 'utf8'));
 
-            console.log(`Applying triage result for PR #${prNumber} | passed: ${result.passed}`);
+            console.log('Applying triage result for PR #' + prNumber + ' | passed: ' + result.passed);
 
-            // ──────────────────────────────────────────────────────────────
-            // Helper: upsert a single bot comment (no duplicate spam)
-            // ──────────────────────────────────────────────────────────────
             const BOT_MARKER = '<!-- mesa-pr-triage -->';
 
             async function upsertComment(body) {
@@ -62,129 +45,34 @@ jobs:
                 github.rest.issues.listComments,
                 { owner, repo, issue_number: prNumber, per_page: 100 }
               );
-              const existing = comments.find(c =>
-                c.user.type === 'Bot' && c.body.includes(BOT_MARKER)
-              );
-              const fullBody = `${BOT_MARKER}\n${body}`;
+              const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(BOT_MARKER));
+              const fullBody = BOT_MARKER + '\n' + body;
               if (existing) {
-                await github.rest.issues.updateComment({
-                  owner, repo, comment_id: existing.id, body: fullBody
-                });
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: fullBody });
               } else {
-                await github.rest.issues.createComment({
-                  owner, repo, issue_number: prNumber, body: fullBody
-                });
+                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: fullBody });
               }
             }
 
             async function addLabel(label) {
-              try {
-                await github.rest.issues.addLabels({
-                  owner, repo, issue_number: prNumber, labels: [label]
-                });
-              } catch (_) {}
+              try { await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [label] }); } catch (_) {}
             }
 
             async function removeLabel(label) {
-              try {
-                await github.rest.issues.removeLabel({
-                  owner, repo, issue_number: prNumber, name: label
-                });
-              } catch (_) {}
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: label }); } catch (_) {}
             }
 
-            // ──────────────────────────────────────────────────────────────
-            // Maintainer override — nothing to do
-            // ──────────────────────────────────────────────────────────────
             if (result.skipAll) {
-              console.log(`PR #${prNumber} has review-ready label — skipping all actions.`);
+              console.log('PR #' + prNumber + ' has review-ready label - skipping.');
               await removeLabel('pr-requirements-warning');
               return;
             }
 
-            // ──────────────────────────────────────────────────────────────
-            // Post or update the bot comment
-            // ──────────────────────────────────────────────────────────────
             if (result.comment) {
               await upsertComment(result.comment);
             }
 
-            // ──────────────────────────────────────────────────────────────
-            // Add or remove the warning label
-            // ──────────────────────────────────────────────────────────────
             if (result.addWarningLabel)    await addLabel('pr-requirements-warning');
             if (result.removeWarningLabel) await removeLabel('pr-requirements-warning');
 
-            console.log(`Done — PR #${prNumber} comment/labels updated.`);
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Enforcement: close PRs that still carry the warning label after 6 hours.
-  # Runs on the same workflow_run trigger (scheduled separately would also work,
-  # but keeping it here reduces the number of workflow files).
-  # ────────────────────────────────────────────────────────────────────────────
-  enforce:
-    name: Close PRs past the grace period
-    runs-on: ubuntu-latest
-    # Only run once per completed triage — no need to run on every PR event
-    if: github.event.workflow_run.conclusion != 'cancelled'
-
-    steps:
-      - name: Close non-compliant PRs
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const GRACE_PERIOD_MS = 6 * 60 * 60 * 1000;    // 6 hours
-            const WARNING_LABEL   = 'pr-requirements-warning';
-            const SKIP_LABEL      = 'review-ready';
-
-            const pullRequests = await github.paginate(
-              github.rest.pulls.list,
-              { owner, repo, state: 'open', per_page: 100 }
-            );
-
-            console.log(`Checking ${pullRequests.length} open PR(s) for expired grace periods.`);
-
-            for (const pr of pullRequests) {
-              const prNumber = pr.number;
-              const prAuthor = pr.user.login;
-              const labels   = pr.labels.map(l => l.name);
-
-              if (pr.draft)                       { continue; }
-              if (labels.includes(SKIP_LABEL))    { continue; }
-              if (!labels.includes(WARNING_LABEL)){ continue; }
-
-              // Find when the warning label was applied via timeline events
-              let labeledAt = null;
-              try {
-                const events = await github.paginate(
-                  github.rest.issues.listEvents,
-                  { owner, repo, issue_number: prNumber, per_page: 100 }
-                );
-                for (let i = events.length - 1; i >= 0; i--) {
-                  const ev = events[i];
-                  if (ev.event === 'labeled' && ev.label?.name === WARNING_LABEL) {
-                    labeledAt = new Date(ev.created_at);
-                    break;
-                  }
-                }
-              } catch (err) {
-                console.log(`#${prNumber} — could not fetch events: ${err.message}`);
-              }
-
-              const referenceTime = labeledAt ?? new Date(pr.created_at);
-              const ageMs         = Date.now() - referenceTime.getTime();
-
-              if (ageMs < GRACE_PERIOD_MS) {
-                const hoursLeft = Math.ceil((GRACE_PERIOD_MS - ageMs) / (60 * 60 * 1000));
-                console.log(`#${prNumber} — within grace period (~${hoursLeft}h left), skipping`);
-                continue;
-              }
-
-              console.log(`#${prNumber} — grace period expired, closing`);
-
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: prNumber,
-                body: `<!-- mesa-pr-triage -->
+            console.log('Done - PR #' + prNumber + ' comment/labels updated.');
