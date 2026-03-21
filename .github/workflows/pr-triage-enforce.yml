@@ -1,0 +1,101 @@
+name: PR Triage Enforcement
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  enforce:
+    name: Close PRs past the grace period
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Close non-compliant PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const GRACE_PERIOD_MS = 6 * 60 * 60 * 1000;
+            const WARNING_LABEL   = 'pr-requirements-warning';
+            const SKIP_LABEL      = 'review-ready';
+
+            const pullRequests = await github.paginate(
+              github.rest.pulls.list,
+              { owner, repo, state: 'open', per_page: 100 }
+            );
+
+            console.log('Found ' + pullRequests.length + ' open PR(s) to evaluate.');
+
+            for (const pr of pullRequests) {
+              const prNumber = pr.number;
+              const prAuthor = pr.user.login;
+              const labels   = pr.labels.map(l => l.name);
+
+              if (pr.draft)                        { console.log('#' + prNumber + ' - draft, skipping'); continue; }
+              if (labels.includes(SKIP_LABEL))     { console.log('#' + prNumber + ' - review-ready, skipping'); continue; }
+              if (!labels.includes(WARNING_LABEL)) { console.log('#' + prNumber + ' - no warning label, skipping'); continue; }
+
+              let labeledAt = null;
+              try {
+                const events = await github.paginate(
+                  github.rest.issues.listEvents,
+                  { owner, repo, issue_number: prNumber, per_page: 100 }
+                );
+                for (let i = events.length - 1; i >= 0; i--) {
+                  const ev = events[i];
+                  if (ev.event === 'labeled' && ev.label && ev.label.name === WARNING_LABEL) {
+                    labeledAt = new Date(ev.created_at);
+                    break;
+                  }
+                }
+              } catch (err) {
+                console.log('#' + prNumber + ' - could not fetch events: ' + err.message);
+              }
+
+              const referenceTime = labeledAt || new Date(pr.created_at);
+              const ageMs         = Date.now() - referenceTime.getTime();
+
+              if (ageMs < GRACE_PERIOD_MS) {
+                const hoursLeft = Math.ceil((GRACE_PERIOD_MS - ageMs) / (60 * 60 * 1000));
+                console.log('#' + prNumber + ' - within grace period (~' + hoursLeft + 'h left), skipping');
+                continue;
+              }
+
+              console.log('#' + prNumber + ' - grace period expired, closing');
+
+              const closeComment = [
+                '<!-- mesa-pr-triage -->',
+                '## PR Closed - Requirements Not Met Within Grace Period',
+                '',
+                'This PR has been automatically closed because the contribution requirements were not resolved within the **6-hour grace period**.',
+                '',
+                '@' + prAuthor + ', you are welcome to:',
+                '1. Fix the issues described in the previous bot comment.',
+                '2. **Re-open** this PR once the requirements are met.',
+                '',
+                'If you believe this was closed in error, please comment here or open a discussion so a maintainer can take a look.',
+              ].join('\n');
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: closeComment,
+              });
+
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: prNumber,
+                state: 'closed',
+              });
+
+              console.log('Closed PR #' + prNumber + ' by @' + prAuthor);
+            }
+
+            console.log('Enforcement run complete.');

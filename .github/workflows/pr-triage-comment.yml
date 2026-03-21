@@ -1,0 +1,78 @@
+name: PR Triage - Comment
+
+on:
+  workflow_run:
+    workflows: ["PR Triage"]
+    types:
+      - completed
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  comment:
+    name: Apply triage results
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled'
+
+    steps:
+      - name: Download triage result
+        uses: actions/download-artifact@v8
+        with:
+          name: triage-result
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply comment and labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+
+            const prNumber = parseInt(fs.readFileSync('pr_number.txt', 'utf8').trim(), 10);
+            const result   = JSON.parse(fs.readFileSync('triage_result.json', 'utf8'));
+
+            console.log('Applying triage result for PR #' + prNumber + ' | passed: ' + result.passed);
+
+            const BOT_MARKER = '<!-- mesa-pr-triage -->';
+
+            async function upsertComment(body) {
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number: prNumber, per_page: 100 }
+              );
+              const existing = comments.find(c => c.user.type === 'Bot' && c.body.includes(BOT_MARKER));
+              const fullBody = BOT_MARKER + '\n' + body;
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: fullBody });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: fullBody });
+              }
+            }
+
+            async function addLabel(label) {
+              try { await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [label] }); } catch (_) {}
+            }
+
+            async function removeLabel(label) {
+              try { await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: label }); } catch (_) {}
+            }
+
+            if (result.skipAll) {
+              console.log('PR #' + prNumber + ' has review-ready label - skipping.');
+              await removeLabel('pr-requirements-warning');
+              return;
+            }
+
+            if (result.comment) {
+              await upsertComment(result.comment);
+            }
+
+            if (result.addWarningLabel)    await addLabel('pr-requirements-warning');
+            if (result.removeWarningLabel) await removeLabel('pr-requirements-warning');
+
+            console.log('Done - PR #' + prNumber + ' comment/labels updated.');
