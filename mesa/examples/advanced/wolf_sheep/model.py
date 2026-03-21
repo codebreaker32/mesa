@@ -77,9 +77,6 @@ class WolfSheep(Model):
         Args:
             scenario: WolfSheepScenario containing model parameters.
         """
-        if scenario is None:
-            scenario = WolfSheepScenario()
-
         super().__init__(scenario=scenario)
 
         # Initialize model parameters
