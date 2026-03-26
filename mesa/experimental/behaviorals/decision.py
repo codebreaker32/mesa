@@ -73,19 +73,28 @@ def rule(
         cooldown: Minimum time between firings. 0 = no cooldown.
         name: Override the rule name (defaults to method name).
 
-    Example::
+    Two forms are supported:
+
+    **Pattern A — plain method (step-based, most models)**::
 
         class Wolf(BehavioralAgent):
             hunger = BehavioralState(decay_rate=0.1, min_value=0, max_value=100)
 
             @rule(condition=lambda self: self.hunger > 80, priority=RulePriority.URGENT)
             def hunt(self):
-                return Task(self, duration=4, action=self._attack_nearest_sheep)
+                self._attack_nearest_sheep()   # just write the action directly
 
-            @rule(condition=lambda self: self.hunger > 40, priority=RulePriority.DEFAULT,
-                  cooldown=5.0)
+            @rule(condition=lambda self: True, priority=RulePriority.LOW, cooldown=5.0)
             def wander(self):
-                return Task(self, duration=2, action=self._move_random)
+                self._move_random()
+
+    **Pattern B — return a Task (continuous-time, real durations)**::
+
+        class Firefighter(BehavioralAgent):
+            @rule(condition=lambda self: self.fire_visible, priority=RulePriority.URGENT)
+            def fight_fire(self):
+                return Task(self, duration=30.0, action=self._fight,
+                            reschedule_on_interrupt="remainder")
     """
     def decorator(func: Callable) -> Callable:
         func._rule_meta = {
@@ -199,19 +208,24 @@ class DecisionSystem:
     # ------------------------------------------------------------------
 
     def evaluate(self) -> str | None:
-        """Evaluate rules and schedule the highest-priority triggered task.
+        """Evaluate rules and fire the highest-priority triggered one.
+
+        Two modes depending on what the rule method returns:
+
+        - **Pattern A (returns None)**: the method body ran its action directly.
+          The rule is recorded as fired; no Task is created or scheduled.
+        - **Pattern B (returns a Task)**: the Task is scheduled via TaskManager.
 
         Returns:
             The name of the rule that fired, or None.
 
         Notes:
-            Skips evaluation entirely if a task is already running.
-            Rules are evaluated in priority order; only the first matching
-            rule fires per call.
+            In Pattern B, skips evaluation entirely if a task is already running.
+            In Pattern A, each step always evaluates because there is no "running
+            task" concept — the action is synchronous and already done.
+            Rules are evaluated in priority order; only the first matching rule
+            fires per call.
         """
-        if self.task_manager.current_task is not None:
-            return None
-
         current_time: float = getattr(self.agent.model, "time", 0.0)
 
         for rule in self.rules:
@@ -243,16 +257,20 @@ class DecisionSystem:
                     traceback.print_exc()
                 continue
 
+            # Pattern A: if the action returned None the method already ran its
+            # body directly. Record the firing and return — no Task needed.
             if task is None:
-                continue
+                rule._last_triggered = current_time
+                return rule.name
 
-            # Avoid scheduling a duplicate task (same type already queued)
-            task_type = type(task).__name__
-            action_name = getattr(getattr(task, "action", None), "__name__", None)
-            task_id = action_name or task_type
+            # Pattern B: action returned a Task — schedule it via TaskManager.
+            # Avoid scheduling a duplicate task (same type already queued).
+            action_name = getattr(getattr(task, "_action_callback", None), "__name__", None)
+            task_id = action_name or type(task).__name__
 
             already_queued = any(
-                (getattr(getattr(t, "action", None), "__name__", None) or type(t).__name__) == task_id
+                (getattr(getattr(t, "_action_callback", None), "__name__", None)
+                 or type(t).__name__) == task_id
                 for t in self.task_manager.task_queue
             )
             if already_queued:
@@ -303,3 +321,6 @@ class DecisionSystem:
             f"DecisionSystem(agent={getattr(self.agent, 'unique_id', '?')}, "
             f"rules={[r.name for r in self.rules]})"
         )
+    
+
+    

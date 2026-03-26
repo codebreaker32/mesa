@@ -1,13 +1,17 @@
 """Concrete behavioral patterns built on BehavioralAgent.
 
-Provides three ready-to-subclass agent archetypes:
+Three ready-to-subclass archetypes, each clearly mapped to a usage pattern:
 
-- NeedsAgent   — homeostatic needs-satisfaction (hunger, thirst, energy, …)
-- BDIAgent     — Belief–Desire–Intention deliberative architecture
-- RLAgent      — Epsilon-greedy Q-learning with pluggable state/action spaces
+NeedsAgent  — Pattern A (step-based, duration=0 tasks)
+              Homeostatic needs (hunger, thirst, fatigue).
+              Auto-generates rules from BehavioralState descriptors + satisfier methods.
 
-Each is a drop-in BehavioralAgent subclass. Override the documented hooks
-to plug in your model-specific logic.
+BDIAgent    — Pattern B (continuous-time, real durations)
+              Belief-Desire-Intention deliberative architecture.
+              Tasks represent intentions that take real simulation time.
+
+RLAgent     — Pattern A or B depending on execute_action duration.
+              Tabular epsilon-greedy Q-learning.
 
 Quick reference
 ---------------
@@ -18,42 +22,49 @@ NeedsAgent::
         hunger = BehavioralState(decay_rate=0.04, min_value=0, max_value=1)
         thirst = BehavioralState(decay_rate=0.06, min_value=0, max_value=1)
 
-        def satisfier_for_hunger(self): return Task(self, 3.0, action=self._eat)
-        def satisfier_for_thirst(self): return Task(self, 1.0, action=self._drink)
+        def satisfier_for_hunger(self):
+            self.hunger = max(0, self.hunger - 0.6)
+
+        def satisfier_for_thirst(self):
+            self.thirst = max(0, self.thirst - 0.8)
 
 BDIAgent::
 
     class Scout(BDIAgent):
+        def perceive(self):
+            self.beliefs["enemy_nearby"] = self._sense_enemy()
+
         def generate_desires(self) -> list[Desire]:
-            desires = [Desire("explore", priority=1)]
             if self.beliefs.get("enemy_nearby"):
-                desires.append(Desire("flee", priority=10))
-            return desires
+                return [Desire(priority=10, name="flee")]
+            return [Desire(priority=1, name="explore")]
 
         def plan(self, desire: Desire) -> Task | None:
             if desire.name == "flee":
-                return Task(self, 2.0, action=self._run_away)
-            return Task(self, 5.0, action=self._move_random)
+                return Task(self, duration=3.0, action=self._run_away,
+                            reschedule_on_interrupt=False)
+            return Task(self, duration=5.0, action=self._move_random,
+                        reschedule_on_interrupt="remainder")
 
 RLAgent::
 
-    class LearnerAgent(RLAgent):
+    class Forager(RLAgent):
         def get_state(self):
-            return (round(self.pos[0] / 10), round(self.pos[1] / 10))
+            return (int(self.energy * 5),)
 
         def get_actions(self) -> list[str]:
-            return ["move_north", "move_south", "move_east", "move_west"]
+            return ["search", "rest", "eat"]
 
         def execute_action(self, action: str) -> Task:
-            return Task(self, 1.0, action=getattr(self, f"_{action}"))
+            return Task(self, duration=0, action=getattr(self, f"_{action}"),
+                        reschedule_on_interrupt=False)
 
         def compute_reward(self) -> float:
-            return self.food_collected - self.energy_spent
+            return self.food_collected - 0.05
 """
 
 from __future__ import annotations
 
-import math
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -66,51 +77,48 @@ from mesa.experimental.behaviorals.task import Task
 
 
 # ===========================================================================
-# NeedsAgent — homeostatic needs satisfaction
+# NeedsAgent — homeostatic needs satisfaction  (Pattern A: duration=0)
 # ===========================================================================
 
 class NeedsAgent(BehavioralAgent):
     """Agent driven by homeostatic needs (hunger, thirst, fatigue, …).
 
-    Define needs as ``BehavioralState`` class attributes with a ``decay_rate``.
-    For each need, declare a ``satisfier_for_<need>(self) -> Task`` method.
-    NeedsAgent automatically creates rules that fire when the need exceeds its
-    critical threshold.
+    **Pattern A — step-based (duration=0 tasks)**
 
-    Thresholds:
-      - ``"critical"`` (default 0.75 of max_value) → urgent priority rule
-      - ``"warning"`` (default 0.50 of max_value) → default priority rule
+    Define needs as ``BehavioralState`` class attributes with a non-zero
+    ``decay_rate``.  For each need, declare a ``satisfier_for_<need>(self)``
+    method that returns a Task with ``duration=0``.  NeedsAgent auto-generates
+    two decision rules per need:
 
-    Override ``critical_threshold`` / ``warning_threshold`` class attributes
-    to change the defaults, or pass explicit thresholds to ``BehavioralState``.
+    - ``satisfy_<need>_critical`` (URGENT priority) — fires above ``critical_fraction``
+    - ``satisfy_<need>_warning``  (DEFAULT priority) — fires above ``warning_fraction``
+
+    Threshold levels default to fractions of ``max_value``; override them by
+    naming thresholds ``"critical"`` and ``"warning"`` in the BehavioralState.
+
+    ``step()`` calls ``sync_states()`` first to materialise lazy decay and
+    fire threshold callbacks, then evaluates rules.
 
     Example::
 
         class Villager(NeedsAgent):
             hunger = BehavioralState(
-                decay_rate=0.04,
-                min_value=0.0, max_value=1.0,
+                decay_rate=0.04, min_value=0.0, max_value=1.0,
                 thresholds={"warning": 0.5, "critical": 0.8},
             )
             thirst = BehavioralState(
-                decay_rate=0.06,
-                min_value=0.0, max_value=1.0,
+                decay_rate=0.06, min_value=0.0, max_value=1.0,
             )
 
-            def satisfier_for_hunger(self) -> Task:
-                return Task(self, duration=3.0, action=self._eat)
+            # satisfier_for_<need> is a plain method — no Task, no boilerplate.
+            def satisfier_for_hunger(self):
+                self.hunger = max(0.0, self.hunger - 0.6)
 
-            def satisfier_for_thirst(self) -> Task:
-                return Task(self, duration=1.0, action=self._drink)
-
-            def _eat(self):
-                self.hunger = max(0, self.hunger - 0.6)
-
-            def _drink(self):
-                self.thirst = max(0, self.thirst - 0.8)
+            def satisfier_for_thirst(self):
+                self.thirst = max(0.0, self.thirst - 0.8)
     """
 
-    #: Fraction of max_value above which the URGENT rule fires (if no explicit threshold).
+    #: Fraction of max_value above which the URGENT rule fires.
     critical_fraction: float = 0.75
     #: Fraction of max_value above which the DEFAULT-priority rule fires.
     warning_fraction: float = 0.50
@@ -124,7 +132,7 @@ class NeedsAgent(BehavioralAgent):
     # ------------------------------------------------------------------
 
     def _register_need_rules(self) -> None:
-        """Scan for BehavioralState descriptors and auto-register need rules."""
+        """Scan class for BehavioralState descriptors and auto-register rules."""
         for attr_name in dir(type(self)):
             descriptor = getattr(type(self), attr_name, None)
             if not isinstance(descriptor, BehavioralState):
@@ -133,30 +141,21 @@ class NeedsAgent(BehavioralAgent):
                 continue  # stationary — not a need
             satisfier_name = f"satisfier_for_{attr_name}"
             if not hasattr(self, satisfier_name):
-                continue  # no satisfier defined, skip
+                continue  # no satisfier defined — skip
 
             satisfier = getattr(self, satisfier_name)
             max_val = descriptor.max_value if descriptor.max_value is not None else 1.0
-            thresholds = descriptor.thresholds
 
-            if "critical" in thresholds:
-                critical_level = thresholds["critical"]
-            else:
-                critical_level = max_val * self.critical_fraction
+            # Resolve threshold levels: explicit name wins, else fraction of max
+            critical_level = descriptor.thresholds.get(
+                "critical", max_val * self.critical_fraction
+            )
+            warning_level = descriptor.thresholds.get(
+                "warning", max_val * self.warning_fraction
+            )
 
-            if "warning" in thresholds:
-                warning_level = thresholds["warning"]
-            else:
-                warning_level = max_val * self.warning_fraction
-
-            # Critical rule (urgent)
             crit_name = f"satisfy_{attr_name}_critical"
             if not any(r.name == crit_name for r in self.decision_system.rules):
-                level = critical_level
-
-                def make_crit_condition(a, lv):
-                    return lambda: getattr(a, a._need_attr) > lv
-
                 self.decision_system.add_rule(
                     name=crit_name,
                     condition=_need_condition(self, attr_name, critical_level),
@@ -164,7 +163,6 @@ class NeedsAgent(BehavioralAgent):
                     priority=RulePriority.URGENT,
                 )
 
-            # Warning rule (default priority)
             warn_name = f"satisfy_{attr_name}_warning"
             if not any(r.name == warn_name for r in self.decision_system.rules):
                 self.decision_system.add_rule(
@@ -175,11 +173,11 @@ class NeedsAgent(BehavioralAgent):
                 )
 
     # ------------------------------------------------------------------
-    # Override step to sync states (so decay-triggered thresholds fire)
+    # step — sync states first so threshold callbacks fire during decay
     # ------------------------------------------------------------------
 
     def step(self) -> None:
-        """Sync all need states (triggering threshold callbacks) then evaluate rules."""
+        """Materialise lazy decay, fire threshold callbacks, then evaluate rules."""
         self.sync_states()
         super().step()
 
@@ -188,10 +186,10 @@ class NeedsAgent(BehavioralAgent):
     # ------------------------------------------------------------------
 
     def needs_summary(self) -> dict[str, float]:
-        """Return current level of every BehavioralState with decay."""
+        """Return current level of every decaying BehavioralState."""
         return {
-            name: value
-            for name, value in self.states.items()
+            name: getattr(self, name)
+            for name in dir(type(self))
             if isinstance(getattr(type(self), name, None), BehavioralState)
             and getattr(type(self), name).decay_rate != 0.0
         }
@@ -213,13 +211,13 @@ class NeedsAgent(BehavioralAgent):
         return worst_name
 
 
-def _need_condition(agent: NeedsAgent, attr_name: str, threshold: float) -> Callable:
-    """Build a zero-arg lambda that checks a need threshold on the agent."""
+def _need_condition(agent: "NeedsAgent", attr_name: str, threshold: float) -> Callable:
+    """Return a zero-arg callable that checks a need threshold on the agent."""
     return lambda a=agent, n=attr_name, t=threshold: getattr(a, n) > t
 
 
 # ===========================================================================
-# BDIAgent — Belief–Desire–Intention
+# BDIAgent — Belief-Desire-Intention  (Pattern B: real durations)
 # ===========================================================================
 
 @dataclass(order=True)
@@ -227,34 +225,32 @@ class Desire:
     """A goal the agent wants to achieve.
 
     Args:
-        name: Identifies the goal (used to look up a plan).
         priority: Higher value = more important. Desires are sorted descending.
+        name: Identifies the goal (used to look up a plan).
         data: Optional payload (target position, target agent, etc.).
-        deadline: Optional model-time by which this desire should be achieved.
+        deadline: Optional model-time by which this desire should be satisfied.
     """
 
-    priority: float  # first field → used for comparison / sorting
+    priority: float         # first field → used for comparison / sorting
     name: str = field(compare=False)
     data: Any = field(default=None, compare=False)
     deadline: float | None = field(default=None, compare=False)
 
 
 class BDIAgent(BehavioralAgent):
-    """Belief–Desire–Intention agent architecture.
+    """Belief-Desire-Intention agent architecture.
 
-    Lifecycle each step:
-      1. **Perceive** → update ``self.beliefs``
-      2. **Deliberate** → call ``generate_desires()`` to produce a ranked desire list
-      3. **Plan** → call ``plan(desire)`` on the top desire to get a Task
-      4. **Execute** → schedule the Task via TaskManager
+    **Pattern B — continuous-time (real durations)**
 
-    Override these three hooks in your subclass:
+    Each step runs a four-phase deliberation cycle.  If a task is already
+    running the agent is committed to it and steps 2-4 are skipped.
 
-    - ``perceive()``: update ``self.beliefs`` from the model
-    - ``generate_desires() -> list[Desire]``: return current desires, sorted by priority
-    - ``plan(desire: Desire) -> Task | None``: return the Task for a given desire
+    1. ``perceive()``         — update ``self.beliefs`` from the environment
+    2. ``generate_desires()`` — return ranked list of current goals
+    3. ``plan(desire)``       — return a Task for the top achievable desire
+    4. Schedule the task via TaskManager
 
-    Example::
+    Example (continuous-time firefighter)::
 
         class Firefighter(BDIAgent):
             def perceive(self):
@@ -264,15 +260,19 @@ class BDIAgent(BehavioralAgent):
             def generate_desires(self) -> list[Desire]:
                 desires = [Desire(priority=1, name="patrol")]
                 if self.beliefs.get("fires"):
-                    nearest = min(self.beliefs["fires"],
-                                  key=lambda f: dist(self.pos, f.pos))
-                    desires.append(Desire(priority=10, name="extinguish", data=nearest))
+                    target = min(self.beliefs["fires"],
+                                 key=lambda f: self._dist(f))
+                    desires.append(Desire(priority=10, name="extinguish",
+                                         data=target))
                 return desires
 
             def plan(self, desire: Desire) -> Task | None:
                 if desire.name == "extinguish":
-                    return Task(self, duration=5.0, action=lambda: self._fight(desire.data))
-                return Task(self, duration=3.0, action=self._patrol)
+                    return Task(self, duration=30.0,
+                                action=lambda: self._fight(desire.data),
+                                reschedule_on_interrupt="remainder")
+                return Task(self, duration=60.0, action=self._patrol,
+                            reschedule_on_interrupt="remainder")
     """
 
     def __init__(self, model, **kwargs):
@@ -287,20 +287,13 @@ class BDIAgent(BehavioralAgent):
 
     def perceive(self) -> None:
         """Update self.beliefs from the environment. Override in subclass."""
-        pass
 
     def generate_desires(self) -> list[Desire]:
-        """Return the agent's current desires sorted by priority (highest first).
-
-        Override in subclass to implement domain logic.
-        """
+        """Return current desires, highest priority first. Override in subclass."""
         return []
 
     def plan(self, desire: Desire) -> Task | None:
-        """Return a Task that pursues *desire*, or None if no plan is possible.
-
-        Override in subclass to map desires to tasks.
-        """
+        """Return a Task for *desire*, or None if no plan is possible. Override in subclass."""
         return None
 
     # ------------------------------------------------------------------
@@ -308,20 +301,33 @@ class BDIAgent(BehavioralAgent):
     # ------------------------------------------------------------------
 
     def step(self) -> None:
-        """Run the full BDI sense-deliberate-act cycle."""
-        # 1. Perceive
+        """Run perceive each tick; deliberate only when idle.
+
+        For pure continuous-time models that have no step loop, pair this with
+        ``on_action_complete`` (see below) so deliberation triggers immediately
+        when a task finishes rather than waiting for the next tick.
+        """
         self.perceive()
+        if not self.is_busy:
+            self._deliberate()
 
-        # 2. Deliberate — skip if already executing an intention
-        if self.is_busy:
-            return
+    def on_action_complete(self, task) -> None:
+        """Re-deliberate immediately when a task finishes (Pattern B hook).
 
-        # 3. Generate and rank desires
-        self.desires = sorted(self.generate_desires(), reverse=True)  # highest priority first
-        if not self.desires:
-            return
+        Fires via TaskManager when the agent goes idle. Allows continuous-time
+        models to react without waiting for the next model step::
 
-        # 4. Pick the top desire and plan for it
+            class Scout(BDIAgent):
+                # Nothing to override — on_action_complete calls _deliberate()
+                # automatically so the Scout picks its next intention immediately.
+                pass
+        """
+        self.perceive()
+        self._deliberate()
+
+    def _deliberate(self) -> None:
+        """Select and schedule the highest-priority achievable desire."""
+        self.desires = sorted(self.generate_desires(), reverse=True)
         for desire in self.desires:
             task = self.plan(desire)
             if task is not None:
@@ -349,45 +355,33 @@ class BDIAgent(BehavioralAgent):
 
 
 # ===========================================================================
-# RLAgent — tabular Q-learning
+# RLAgent — tabular Q-learning  (Pattern A or B)
 # ===========================================================================
 
 class RLAgent(BehavioralAgent):
     """Agent that learns action values via tabular epsilon-greedy Q-learning.
 
-    Override three hooks:
+    **Pattern A or B depending on execute_action duration.**
 
-    - ``get_state() -> Hashable``: discretised world state (used as Q-table key)
-    - ``get_actions() -> list[str]``: available actions from the current state
-    - ``execute_action(action: str) -> Task``: return the Task for an action
-    - ``compute_reward() -> float``: reward signal after an action completes
+    Use ``duration=0`` for step-based models (each action = one step).
+    Use real durations for continuous-time models.
 
-    The Q-table is updated automatically after each task completes.
+    Override four hooks:
+
+    - ``get_state() -> Hashable``        — discretised world state (Q-table key)
+    - ``get_actions() -> list[str]``     — available actions from current state
+    - ``execute_action(action) -> Task`` — Task for a given action name
+    - ``compute_reward() -> float``      — immediate reward after last action
+
+    The Q-table is updated automatically at the start of each step using the
+    reward from the previous action.
 
     Args:
         alpha: Learning rate (0 < α ≤ 1).
         gamma: Discount factor (0 ≤ γ < 1).
         epsilon: Initial exploration rate.
-        epsilon_decay: Multiplied by epsilon after each episode.
-        epsilon_min: Minimum exploration rate.
-
-    Example::
-
-        class Forager(RLAgent):
-            def get_state(self):
-                x, y = self.pos
-                return (x // 5, y // 5, int(self.energy > 0.5))
-
-            def get_actions(self):
-                return ["north", "south", "east", "west", "eat"]
-
-            def execute_action(self, action):
-                if action == "eat":
-                    return Task(self, 1.0, action=self._eat)
-                return Task(self, 1.0, action=lambda: self._move(action))
-
-            def compute_reward(self):
-                return self.food_eaten - 0.1  # food reward minus step cost
+        epsilon_decay: Multiplier applied to epsilon after each action.
+        epsilon_min: Floor for epsilon.
     """
 
     def __init__(
@@ -409,7 +403,9 @@ class RLAgent(BehavioralAgent):
         self.epsilon_min = epsilon_min
 
         # Q-table: {state: {action: q_value}}
-        self.q_table: dict[Any, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+        self.q_table: dict[Any, dict[str, float]] = defaultdict(
+            lambda: defaultdict(float)
+        )
 
         self._prev_state: Any = None
         self._prev_action: str | None = None
@@ -422,15 +418,15 @@ class RLAgent(BehavioralAgent):
 
     def get_state(self) -> Any:
         """Return a hashable representation of the current world state."""
-        raise NotImplementedError("Override get_state() to return a hashable state.")
+        raise NotImplementedError("Override get_state().")
 
     def get_actions(self) -> list[str]:
-        """Return the list of action names available in the current state."""
-        raise NotImplementedError("Override get_actions() to return available actions.")
+        """Return available action names from the current state."""
+        raise NotImplementedError("Override get_actions().")
 
     def execute_action(self, action: str) -> Task:
         """Return a Task that executes *action*."""
-        raise NotImplementedError("Override execute_action() to map action names to Tasks.")
+        raise NotImplementedError("Override execute_action().")
 
     def compute_reward(self) -> float:
         """Return the immediate reward after the last action completed."""
@@ -450,7 +446,7 @@ class RLAgent(BehavioralAgent):
         return max(actions, key=lambda a: q_vals.get(a, 0.0))
 
     def best_action(self, state: Any | None = None) -> str | None:
-        """Return the greedy best action for *state* (or current state if None)."""
+        """Return the greedy best action for *state* (default: current state)."""
         s = state if state is not None else self.get_state()
         actions = self.get_actions()
         if not actions:
@@ -458,39 +454,53 @@ class RLAgent(BehavioralAgent):
         return max(actions, key=lambda a: self.q_table[s].get(a, 0.0))
 
     # ------------------------------------------------------------------
-    # Q-update
+    # Q-update (Bellman equation)
     # ------------------------------------------------------------------
 
     def _update_q(self, reward: float, new_state: Any, actions: list[str]) -> None:
         if self._prev_state is None or self._prev_action is None:
             return
         old_q = self.q_table[self._prev_state][self._prev_action]
-        future_q = max((self.q_table[new_state].get(a, 0.0) for a in actions), default=0.0)
+        future_q = max(
+            (self.q_table[new_state].get(a, 0.0) for a in actions), default=0.0
+        )
         new_q = old_q + self.alpha * (reward + self.gamma * future_q - old_q)
         self.q_table[self._prev_state][self._prev_action] = new_q
 
     # ------------------------------------------------------------------
-    # Step
+    # step / continuous-time hook
     # ------------------------------------------------------------------
 
     def step(self) -> None:
-        """Sense-decide-act: update Q-table, then select and execute the next action."""
+        """Update Q-table then select next action (step-based Pattern A).
+
+        For continuous-time (Pattern B) models, override ``on_action_complete``
+        instead — it fires immediately when the previous task finishes.
+        """
         if self.is_busy:
             return
+        self._sense_and_act()
 
+    def on_action_complete(self, task) -> None:
+        """Re-evaluate and act immediately when a task finishes (Pattern B hook).
+
+        Fires via TaskManager when the agent goes idle, enabling continuous-time
+        Q-learning without a step loop.
+        """
+        self._sense_and_act()
+
+    def _sense_and_act(self) -> None:
+        """Update Q-table from previous reward, select next action, schedule task."""
         current_state = self.get_state()
         actions = self.get_actions()
 
-        # Update Q from the previous step's reward
         if self._prev_state is not None:
             reward = self.compute_reward()
             self._total_reward += reward
             self._update_q(reward, current_state, actions)
 
-        # Decay exploration rate
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-        # Select and execute action
         action = self.select_action(current_state, actions)
         self._prev_state = current_state
         self._prev_action = action
@@ -519,18 +529,23 @@ class RLAgent(BehavioralAgent):
         return self._episode_count
 
     def q_values(self, state: Any | None = None) -> dict[str, float]:
-        """Return the Q-values for *state* (default: current state)."""
+        """Return Q-values for *state* (default: current state)."""
         s = state if state is not None else self.get_state()
         return dict(self.q_table[s])
 
     def policy_summary(self, n_states: int = 10) -> list[dict]:
-        """Return a summary of the n most-visited states and their best actions."""
-        states = sorted(self.q_table.keys(),
-                        key=lambda s: max(self.q_table[s].values(), default=0),
-                        reverse=True)[:n_states]
-        result = []
-        for s in states:
-            q_vals = self.q_table[s]
-            best = max(q_vals, key=q_vals.get) if q_vals else None
-            result.append({"state": s, "best_action": best, "q_values": dict(q_vals)})
-        return result
+        """Return a summary of the n highest-value states and their best actions."""
+        states = sorted(
+            self.q_table.keys(),
+            key=lambda s: max(self.q_table[s].values(), default=0),
+            reverse=True,
+        )[:n_states]
+        return [
+            {
+                "state": s,
+                "best_action": max(self.q_table[s], key=self.q_table[s].get)
+                if self.q_table[s] else None,
+                "q_values": dict(self.q_table[s]),
+            }
+            for s in states
+        ]

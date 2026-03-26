@@ -213,6 +213,24 @@ class BehavioralAgent(Agent):
         self.decision_system.evaluate()
 
     # ------------------------------------------------------------------
+    # Continuous-time hook (Pattern B)
+    # ------------------------------------------------------------------
+
+    def on_action_complete(self, task: "Task") -> None:
+        """Called when the agent goes idle after a task completes.
+
+        For step-based (Pattern A) models the default no-op is correct:
+        step() re-evaluates rules each tick regardless.
+
+        For continuous-time (Pattern B) models, override to re-evaluate
+        immediately after a task finishes without waiting for the next step::
+
+            class Scout(BDIAgent):
+                def on_action_complete(self, task):
+                    self.decision_system.evaluate()
+        """
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -220,6 +238,11 @@ class BehavioralAgent(Agent):
         """Clean up tasks before removing the agent from the model."""
         if self.task_manager.current_task is not None:
             self.task_manager.cancel_current()
+            
+        # Clear the queue to prevent queued tasks from holding references
+        # to this agent, which causes memory leaks.
+        self.task_manager.clear_queue()
+        
         super().remove()
 
     def __repr__(self) -> str:

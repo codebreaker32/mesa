@@ -25,7 +25,6 @@ from mesa.experimental.behaviorals.decision import RulePriority, rule
 from mesa.experimental.behaviorals.patterns import BDIAgent, Desire, NeedsAgent, RLAgent
 from mesa.experimental.behaviorals.state import BehavioralState, StateSignal
 from mesa.experimental.behaviorals.task import (
-    Resource,
     Task,
     TaskManager,
     TaskRequirementsError,
@@ -51,7 +50,6 @@ __all__ = [
     "TaskSignals",
     "TaskState",
     "TaskRequirementsError",
-    "Resource",
     # Reward helpers
     "linear_reward",
     "quadratic_reward",
