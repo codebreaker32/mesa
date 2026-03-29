@@ -22,7 +22,6 @@ Drop all files in this directory into ``mesa/experimental/behaviorals/``.
 
 from mesa.experimental.behaviorals.behavioral_agent import BehavioralAgent
 from mesa.experimental.behaviorals.decision import RulePriority, rule
-from mesa.experimental.behaviorals.patterns import BDIAgent, Desire, NeedsAgent, RLAgent
 from mesa.experimental.behaviorals.state import BehavioralState, StateSignal
 from mesa.experimental.behaviorals.task import (
     Task,
@@ -55,9 +54,4 @@ __all__ = [
     "quadratic_reward",
     "threshold_reward",
     "exponential_reward",
-    # Patterns
-    "NeedsAgent",
-    "BDIAgent",
-    "Desire",
-    "RLAgent",
 ]
