@@ -12,17 +12,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import IntEnum, auto
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from mesa.agent import Agent
     from mesa.experimental.behaviorals.task import Task, TaskManager
 
-
-# ---------------------------------------------------------------------------
-# Priority
-# ---------------------------------------------------------------------------
 
 class RulePriority(IntEnum):
     """Priority levels for decision rules. Lower value = higher priority."""
@@ -34,26 +30,21 @@ class RulePriority(IntEnum):
     LOW = 5
 
 
-# ---------------------------------------------------------------------------
-# Rule dataclass
-# ---------------------------------------------------------------------------
-
 @dataclass(slots=True)
 class Rule:
     """A single decision rule: condition → task-producing action."""
 
     name: str
     condition: Callable[[], bool]
-    action: Callable[[], "Task"]
+    action: Callable[[], Task]
     priority: RulePriority = RulePriority.DEFAULT
     cooldown: float = 0.0
     enabled: bool = True
     _last_triggered: float = field(default=0.0, init=False)
 
 
-# ---------------------------------------------------------------------------
 # @rule decorator
-# ---------------------------------------------------------------------------
+
 
 def rule(
     condition: Callable,
@@ -96,6 +87,7 @@ def rule(
                 return Task(self, duration=30.0, action=self._fight,
                             reschedule_on_interrupt="remainder")
     """
+
     def decorator(func: Callable) -> Callable:
         func._rule_meta = {
             "name": name or func.__name__,
@@ -104,12 +96,12 @@ def rule(
             "cooldown": cooldown,
         }
         return func
+
     return decorator
 
 
-# ---------------------------------------------------------------------------
 # DecisionSystem
-# ---------------------------------------------------------------------------
+
 
 class DecisionSystem:
     """Manages rule-based decision-making for one agent.
@@ -135,21 +127,19 @@ class DecisionSystem:
                 return Task(self, duration=3, action=self._flee)
     """
 
-    def __init__(self, agent: "Agent", task_manager: "TaskManager"):
+    def __init__(self, agent: Agent, task_manager: TaskManager):
         self.agent = agent
         self.task_manager = task_manager
         self.rules: list[Rule] = []
         self.debug: bool = False  # set True to print rule evaluation errors
 
-    # ------------------------------------------------------------------
     # Rule management
-    # ------------------------------------------------------------------
 
     def add_rule(
         self,
         name: str,
         condition: Callable[[], bool],
-        action: Callable[[], "Task"],
+        action: Callable[[], Task],
         priority: RulePriority = RulePriority.DEFAULT,
         cooldown: float = 0.0,
     ) -> Rule:
@@ -171,8 +161,13 @@ class DecisionSystem:
         if any(r.name == name for r in self.rules):
             raise ValueError(f"Rule '{name}' already exists. Use remove_rule() first.")
 
-        r = Rule(name=name, condition=condition, action=action,
-                 priority=priority, cooldown=cooldown)
+        r = Rule(
+            name=name,
+            condition=condition,
+            action=action,
+            priority=priority,
+            cooldown=cooldown,
+        )
         self.rules.append(r)
         self._sort_rules()
         return r
@@ -203,9 +198,7 @@ class DecisionSystem:
         """Retrieve a rule by name, or None."""
         return next((r for r in self.rules if r.name == name), None)
 
-    # ------------------------------------------------------------------
     # Evaluation
-    # ------------------------------------------------------------------
 
     def evaluate(self) -> str | None:
         """Evaluate rules and fire the highest-priority triggered one.
@@ -241,7 +234,10 @@ class DecisionSystem:
             except Exception as exc:
                 if self.debug:
                     import traceback
-                    print(f"[DecisionSystem] Error in condition for rule '{rule.name}': {exc}")
+
+                    print(
+                        f"[DecisionSystem] Error in condition for rule '{rule.name}': {exc}"
+                    )
                     traceback.print_exc()
                 continue
 
@@ -253,7 +249,10 @@ class DecisionSystem:
             except Exception as exc:
                 if self.debug:
                     import traceback
-                    print(f"[DecisionSystem] Error in action for rule '{rule.name}': {exc}")
+
+                    print(
+                        f"[DecisionSystem] Error in action for rule '{rule.name}': {exc}"
+                    )
                     traceback.print_exc()
                 continue
 
@@ -265,12 +264,17 @@ class DecisionSystem:
 
             # Pattern B: action returned a Task — schedule it via TaskManager.
             # Avoid scheduling a duplicate task (same type already queued).
-            action_name = getattr(getattr(task, "_action_callback", None), "__name__", None)
+            action_name = getattr(
+                getattr(task, "_action_callback", None), "__name__", None
+            )
             task_id = action_name or type(task).__name__
 
             already_queued = any(
-                (getattr(getattr(t, "_action_callback", None), "__name__", None)
-                 or type(t).__name__) == task_id
+                (
+                    getattr(getattr(t, "_action_callback", None), "__name__", None)
+                    or type(t).__name__
+                )
+                == task_id
                 for t in self.task_manager.task_queue
             )
             if already_queued:
@@ -282,9 +286,7 @@ class DecisionSystem:
 
         return None
 
-    # ------------------------------------------------------------------
     # Introspection
-    # ------------------------------------------------------------------
 
     def get_available_rules(self) -> list[dict[str, Any]]:
         """Return info about all currently-triggered rules (for debugging/UI).
@@ -295,23 +297,23 @@ class DecisionSystem:
         current_time = getattr(self.agent.model, "time", 0.0)
         result = []
         for r in self.rules:
-            on_cooldown = r.cooldown > 0 and (current_time - r._last_triggered) < r.cooldown
+            on_cooldown = (
+                r.cooldown > 0 and (current_time - r._last_triggered) < r.cooldown
+            )
             try:
                 cond = r.condition()
             except Exception:
                 cond = None
-            result.append({
-                "name": r.name,
-                "priority": r.priority.name,
-                "enabled": r.enabled,
-                "condition_true": cond,
-                "on_cooldown": on_cooldown,
-            })
+            result.append(
+                {
+                    "name": r.name,
+                    "priority": r.priority.name,
+                    "enabled": r.enabled,
+                    "condition_true": cond,
+                    "on_cooldown": on_cooldown,
+                }
+            )
         return result
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _sort_rules(self) -> None:
         self.rules.sort(key=lambda r: r.priority.value)
@@ -321,6 +323,3 @@ class DecisionSystem:
             f"DecisionSystem(agent={getattr(self.agent, 'unique_id', '?')}, "
             f"rules={[r.name for r in self.rules]})"
         )
-    
-
-    

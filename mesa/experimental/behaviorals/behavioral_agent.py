@@ -84,15 +84,13 @@ class BehavioralAgent(Agent):
         decision_system: The agent's DecisionSystem instance.
     """
 
-    def __init__(self, model: "Model", **kwargs: Any) -> None:
+    def __init__(self, model: Model, **kwargs: Any) -> None:
         super().__init__(model, **kwargs)
         self.task_manager: TaskManager = TaskManager(self)
         self.decision_system: DecisionSystem = DecisionSystem(self, self.task_manager)
         self._register_decorated_rules()
 
-    # ------------------------------------------------------------------
     # Auto-register @rule decorated methods
-    # ------------------------------------------------------------------
 
     def _register_decorated_rules(self) -> None:
         """Scan the MRO for methods tagged with @rule and register them."""
@@ -125,9 +123,7 @@ class BehavioralAgent(Agent):
                         cooldown=cooldown,
                     )
 
-    # ------------------------------------------------------------------
     # Convenience API that delegates to sub-systems
-    # ------------------------------------------------------------------
 
     def add_rule(
         self,
@@ -171,9 +167,7 @@ class BehavioralAgent(Agent):
         """
         return BehavioralState.sync_all(self)
 
-    # ------------------------------------------------------------------
     # Properties
-    # ------------------------------------------------------------------
 
     @property
     def current_task(self) -> Task | None:
@@ -196,9 +190,7 @@ class BehavioralAgent(Agent):
         """Snapshot of all BehavioralState values (post-decay) on this agent."""
         return BehavioralState.get_all(self)
 
-    # ------------------------------------------------------------------
-    # step()
-    # ------------------------------------------------------------------
+    # step() hook (Pattern A)
 
     def step(self) -> None:
         """Evaluate decision rules each step.
@@ -212,11 +204,9 @@ class BehavioralAgent(Agent):
         """
         self.decision_system.evaluate()
 
-    # ------------------------------------------------------------------
     # Continuous-time hook (Pattern B)
-    # ------------------------------------------------------------------
 
-    def on_action_complete(self, task: "Task") -> None:
+    def on_action_complete(self, task: Task) -> None:
         """Called when the agent goes idle after a task completes.
 
         For step-based (Pattern A) models the default no-op is correct:
@@ -230,19 +220,17 @@ class BehavioralAgent(Agent):
                     self.decision_system.evaluate()
         """
 
-    # ------------------------------------------------------------------
     # Lifecycle
-    # ------------------------------------------------------------------
 
     def remove(self) -> None:
         """Clean up tasks before removing the agent from the model."""
         if self.task_manager.current_task is not None:
             self.task_manager.cancel_current()
-            
+
         # Clear the queue to prevent queued tasks from holding references
         # to this agent, which causes memory leaks.
         self.task_manager.clear_queue()
-        
+
         super().remove()
 
     def __repr__(self) -> str:

@@ -79,9 +79,7 @@ class StateSignal:
         )
 
 
-# ---------------------------------------------------------------------------
 # Descriptor
-# ---------------------------------------------------------------------------
 
 
 class BehavioralState:
@@ -126,9 +124,7 @@ class BehavioralState:
         self._change_key: str = ""  # obj.__dict__ key for on-change callbacks
         self._threshold_key: str = ""  # obj.__dict__ key for threshold callbacks
 
-    # ------------------------------------------------------------------
     # Descriptor protocol
-    # ------------------------------------------------------------------
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.attr_name = name
@@ -187,9 +183,7 @@ class BehavioralState:
                     traceback.print_exc()
                     print(f"[BehavioralState] on_change callback raised: {exc}")
 
-    # ------------------------------------------------------------------
     # Internal helpers
-    # ------------------------------------------------------------------
 
     def _clamp(self, value: float) -> float:
         if self.min_value is not None:
@@ -206,7 +200,8 @@ class BehavioralState:
 
         for name, level in self.thresholds.items():
             crossed_up = old < level <= new
-            crossed_down = old >= level > new
+            crossed_down = old > level >= new
+
             if not (crossed_up or crossed_down):
                 continue
 
@@ -219,14 +214,9 @@ class BehavioralState:
                 try:
                     cb(sig)
                 except Exception as exc:
-                    import traceback
-
-                    traceback.print_exc()
                     print(f"[BehavioralState] threshold callback raised: {exc}")
 
-    # ------------------------------------------------------------------
     # Materialise lazy decay (call from step to trigger threshold signals)
-    # ------------------------------------------------------------------
 
     def sync(self, obj: Any) -> float:
         """Materialise the current lazy-decay value and fire any threshold callbacks.
@@ -266,9 +256,7 @@ class BehavioralState:
 
         return current
 
-    # ------------------------------------------------------------------
     # Public callback registration helpers (static methods)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def on_change(obj: Any, attr: str, callback: Callable) -> None:

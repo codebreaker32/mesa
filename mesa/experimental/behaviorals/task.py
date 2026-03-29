@@ -112,7 +112,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import IntEnum, auto
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mesa.experimental.actions import Action, ActionState
 from mesa.time import Priority
@@ -121,37 +121,31 @@ if TYPE_CHECKING:
     from mesa.agent import Agent
 
 
-# ---------------------------------------------------------------------------
 # TaskSignals — string constants for task lifecycle events
 #
 # Used as a typed vocabulary in subclasses of Task or TaskManager that need
 # to record or react to lifecycle transitions.  These are NOT Mesa reactive
 # signals; they are just named strings.  TaskManager itself does not emit
 # them — subclasses that need external observation can use them as keys.
-# ---------------------------------------------------------------------------
 
-class TaskSignals:
-    """String constants for task lifecycle events.
+# class TaskSignals:
+#     """String constants for task lifecycle events.
 
-    Use these in subclasses of ``Task`` or ``TaskManager`` when you need a
-    typed, readable name for lifecycle transitions (e.g., in a statistics
-    log or a custom TaskManager that records completions).
+#     Use these in subclasses of ``Task`` or ``TaskManager`` when you need a
+#     typed, readable name for lifecycle transitions (e.g., in a statistics
+#     log or a custom TaskManager that records completions).
 
-    TaskManager itself does **not** emit these — all agent-to-task
-    communication is synchronous via hooks.  External observation is done
-    by subclassing; see module docstring for the pattern.
-    """
+#     TaskManager itself does **not** emit these — all agent-to-task
+#     communication is synchronous via hooks.  External observation is done
+#     by subclassing; see module docstring for the pattern.
+#     """
 
-    STARTED = "started"
-    COMPLETED = "completed"
-    INTERRUPTED = "interrupted"
-    RESUMED = "resumed"
-    FAILED = "failed"
+#     STARTED = "started"
+#     COMPLETED = "completed"
+#     INTERRUPTED = "interrupted"
+#     RESUMED = "resumed"
+#     FAILED = "failed"
 
-
-# ---------------------------------------------------------------------------
-# TaskState — richer 6-way state enum
-# ---------------------------------------------------------------------------
 
 class TaskState(IntEnum):
     """Richer lifecycle state for Tasks.
@@ -162,15 +156,11 @@ class TaskState(IntEnum):
 
     PENDING = auto()
     ACTIVE = auto()
-    PAUSED = auto()       # interrupted but queued for resumption
+    PAUSED = auto()  # interrupted but queued for resumption
     COMPLETED = auto()
     INTERRUPTED = auto()  # interrupted and discarded
     FAILED = auto()
 
-
-# ---------------------------------------------------------------------------
-# Task
-# ---------------------------------------------------------------------------
 
 class Task(Action):
     """A durative action managed by TaskManager.
@@ -205,12 +195,12 @@ class Task(Action):
 
     def __init__(
         self,
-        agent: "Agent",
-        duration: float | Callable[["Agent"], float] = 1.0,
+        agent: Agent,
+        duration: float | Callable[[Agent], float] = 1.0,
         *,
         action: Callable[[], Any] | None = None,
         name: str | None = None,
-        priority: Priority | Callable[["Agent"], Priority] = Priority.DEFAULT,
+        priority: Priority | Callable[[Agent], Priority] = Priority.DEFAULT,
         interruptible: bool = True,
         reschedule_on_interrupt: bool | str = "remainder",
         requirements: dict[str, Callable[[], bool]] | None = None,
@@ -223,12 +213,12 @@ class Task(Action):
             agent,
             duration,
             name=name,
-            priority=0.0,      # placeholder; Task overrides priority resolution
+            priority=0.0,  # placeholder; Task overrides priority resolution
             interruptible=interruptible,
         )
 
         # Override Action's _priority_spec with the Priority enum version
-        self._priority_spec: Priority | Callable[["Agent"], Priority] = priority
+        self._priority_spec: Priority | Callable[[Agent], Priority] = priority
 
         # Task-specific attributes
         self._action_callback: Callable[[], Any] | None = action
@@ -243,11 +233,9 @@ class Task(Action):
         self._failed: bool = False
         # Set by TaskManager._start_task; None when Task is used standalone.
         # Keeps Task decoupled from TaskManager — no hasattr probe at runtime.
-        self._completion_callback: Callable[["Task"], None] | None = None
+        self._completion_callback: Callable[[Task], None] | None = None
 
-    # ------------------------------------------------------------------
     # task_state — richer 6-way state view
-    # ------------------------------------------------------------------
 
     @property
     def task_state(self) -> TaskState:
@@ -275,9 +263,7 @@ class Task(Action):
             and self.reschedule_on_interrupt == "remainder"
         )
 
-    # ------------------------------------------------------------------
     # Lifecycle hooks (override in subclasses)
-    # ------------------------------------------------------------------
 
     def on_start(self) -> None:
         """Called when the task first begins. Override in subclasses."""
@@ -299,9 +285,7 @@ class Task(Action):
     def on_interrupt(self, progress: float) -> None:
         """Called when interrupted. ``progress`` is the fraction completed (0-1)."""
 
-    # ------------------------------------------------------------------
     # Requirements
-    # ------------------------------------------------------------------
 
     def check_requirements(self) -> tuple[bool, list[str]]:
         """Evaluate all requirements. Returns (all_passed, [failed_names])."""
@@ -316,9 +300,7 @@ class Task(Action):
                 failed.append(f"{req_name} (error: {exc})")
         return len(failed) == 0, failed
 
-    # ------------------------------------------------------------------
     # Reward
-    # ------------------------------------------------------------------
 
     def calculate_reward(self) -> float:
         """Return the reward for the task's current progress."""
@@ -330,11 +312,9 @@ class Task(Action):
             else float(self.reward) * self._progress
         )
 
-    # ------------------------------------------------------------------
     # start() — full override to use Priority enum in schedule_event
-    # ------------------------------------------------------------------
 
-    def start(self) -> "Task":
+    def start(self) -> Task:
         """Start (or resume) this task.
 
         Differences from Action.start():
@@ -400,9 +380,7 @@ class Task(Action):
         )
         return self
 
-    # ------------------------------------------------------------------
     # _do_complete() — notifies TaskManager instead of agent.current_action
-    # ------------------------------------------------------------------
 
     def _do_complete(self) -> None:
         """Called by Mesa's event scheduler when the task duration elapses."""
@@ -421,9 +399,7 @@ class Task(Action):
             # Standalone usage (no TaskManager): call hook directly.
             self.on_complete()
 
-    # ------------------------------------------------------------------
     # interrupt() — applies reschedule_on_interrupt policy
-    # ------------------------------------------------------------------
 
     def interrupt(self) -> bool:
         """Interrupt this task.
@@ -447,9 +423,7 @@ class Task(Action):
         self.on_interrupt(self._progress)
         return True
 
-    # ------------------------------------------------------------------
     # Helpers
-    # ------------------------------------------------------------------
 
     def _priority_value(self) -> int:
         """Return an int suitable for queue sorting (lower = higher priority)."""
@@ -465,10 +439,6 @@ class Task(Action):
         )
 
 
-# ---------------------------------------------------------------------------
-# TaskRequirementsError
-# ---------------------------------------------------------------------------
-
 class TaskRequirementsError(RuntimeError):
     """Raised when a Task cannot start because requirements are not met."""
 
@@ -477,10 +447,6 @@ class TaskRequirementsError(RuntimeError):
         self.failed = failed
         super().__init__(f"Task '{task.name}' requirements not met: {failed}")
 
-
-# ---------------------------------------------------------------------------
-# TaskManager
-# ---------------------------------------------------------------------------
 
 class TaskManager:
     """Manages tasks for a single BehavioralAgent.
@@ -519,16 +485,14 @@ class TaskManager:
     no longer creates ``Event`` objects directly.
     """
 
-    def __init__(self, agent: "Agent"):
+    def __init__(self, agent: Agent):
         self.agent = agent
         self.current_task: Task | None = None
         self.task_queue: list[Task] = []
         self._completed_tasks: list[Task] = []
         self._interrupted_tasks: list[Task] = []
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    # Public APIs
 
     def schedule(self, task: Task) -> bool:
         """Schedule a task for execution.
@@ -593,9 +557,7 @@ class TaskManager:
             "current_progress": current.progress if current else 0.0,
         }
 
-    # ------------------------------------------------------------------
     # Callbacks from Task (not called directly by users)
-    # ------------------------------------------------------------------
 
     def _on_task_completed(self, task: Task) -> None:
         """Called by Task._do_complete() when the task duration elapses."""
@@ -621,7 +583,7 @@ class TaskManager:
             result = task.on_complete()
             reward = task.calculate_reward()
             self._completed_tasks.append(task)
-        except Exception as exc:
+        except Exception:
             task._failed = True
 
         self._process_queue()
@@ -655,11 +617,8 @@ class TaskManager:
         """
         # Base implementation: nothing extra to do.  Queue and history have
         # already been updated by _interrupt_current_task before this is called.
-        pass
 
-    # ------------------------------------------------------------------
     # Internal
-    # ------------------------------------------------------------------
 
     def _start_task(self, task: Task) -> None:
         """Start a task immediately via Task.start()."""
@@ -672,12 +631,12 @@ class TaskManager:
 
         try:
             task.start()
-        except TaskRequirementsError as exc:
+        except TaskRequirementsError:
             task._failed = True
             self.current_task = None
             self._process_queue()
             return
-        except Exception as exc:
+        except Exception:
             task._failed = True
             self.current_task = None
             self._process_queue()
@@ -726,9 +685,8 @@ class TaskManager:
             return
 
 
-# ---------------------------------------------------------------------------
 # Reward helper functions
-# ---------------------------------------------------------------------------
+
 
 def linear_reward(base_value: float) -> Callable[[float], float]:
     """Reward proportional to progress: base_value * progress."""
@@ -737,19 +695,23 @@ def linear_reward(base_value: float) -> Callable[[float], float]:
 
 def quadratic_reward(base_value: float) -> Callable[[float], float]:
     """Reward scaling as progress squared."""
-    return lambda p: base_value * (p ** 2)
+    return lambda p: base_value * (p**2)
 
 
-def threshold_reward(base_value: float, threshold: float = 0.8) -> Callable[[float], float]:
+def threshold_reward(
+    base_value: float, threshold: float = 0.8
+) -> Callable[[float], float]:
     """Full reward only when progress reaches threshold, zero otherwise."""
     return lambda p: base_value if p >= threshold else 0.0
 
 
-def exponential_reward(base_value: float, rate: float = 2.0) -> Callable[[float], float]:
+def exponential_reward(
+    base_value: float, rate: float = 2.0
+) -> Callable[[float], float]:
     """Exponentially increasing reward (near-zero until close to completion)."""
     import math
-    return lambda p: base_value * math.exp(rate * p - rate)
 
+    return lambda p: base_value * math.exp(rate * p - rate)
 
 
 # class Resource:
@@ -788,7 +750,7 @@ def exponential_reward(base_value: float, rate: float = 2.0) -> Callable[[float]
 #     def _grant(self, task: Task) -> None:
 #         self.available -= 1
 #         self.active.add(task)
-        
+
 #         # Safely route through TaskManager if the agent has one,
 #         # otherwise fall back to standalone execution.
 #         manager = getattr(task.agent, "task_manager", None)
