@@ -41,18 +41,14 @@ Usage::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-
-# ---------------------------------------------------------------------------
-# Signals (lightweight, no Mesa dependency)
-# ---------------------------------------------------------------------------
 
 class StateSignal:
     """Emitted by BehavioralState callbacks. Mirrors Mesa Message shape."""
 
-    __slots__ = ("attr", "owner", "old_value", "new_value", "threshold", "direction")
+    __slots__ = ("attr", "direction", "new_value", "old_value", "owner", "threshold")
 
     def __init__(
         self,
@@ -74,7 +70,11 @@ class StateSignal:
         return (
             f"StateSignal({self.attr!r}, "
             f"old={self.old_value:.3f}, new={self.new_value:.3f}"
-            + (f", threshold={self.threshold!r}({self.direction})" if self.threshold else "")
+            + (
+                f", threshold={self.threshold!r}({self.direction})"
+                if self.threshold
+                else ""
+            )
             + ")"
         )
 
@@ -82,6 +82,7 @@ class StateSignal:
 # ---------------------------------------------------------------------------
 # Descriptor
 # ---------------------------------------------------------------------------
+
 
 class BehavioralState:
     """A descriptor for a numeric agent state variable with optional time-based decay.
@@ -91,8 +92,7 @@ class BehavioralState:
     reading applies ``raw + decay_rate * elapsed`` on the fly.
 
     Args:
-        decay_rate: Change per model-time-unit (positive = grows, negative = shrinks).
-                    0.0 means no decay.
+        decay_rate: Change per model-time-unit. Can be a float or a callable taking the instance.
         min_value: Lower clamp. None means unbounded.
         max_value: Upper clamp. None means unbounded.
         thresholds: Named crossing points, e.g. ``{"hungry": 60.0, "starving": 85.0}``.
@@ -108,7 +108,7 @@ class BehavioralState:
 
     def __init__(
         self,
-        decay_rate: float = 0.0,
+        decay_rate: float | Callable[[Any], float] = 0.0,
         min_value: float | None = None,
         max_value: float | None = None,
         thresholds: dict[str, float] | None = None,
@@ -122,8 +122,8 @@ class BehavioralState:
 
         # Set by __set_name__
         self.attr_name: str = ""
-        self._data_key: str = ""       # obj.__dict__ key for (value, timestamp)
-        self._change_key: str = ""     # obj.__dict__ key for on-change callbacks
+        self._data_key: str = ""  # obj.__dict__ key for (value, timestamp)
+        self._change_key: str = ""  # obj.__dict__ key for on-change callbacks
         self._threshold_key: str = ""  # obj.__dict__ key for threshold callbacks
 
     # ------------------------------------------------------------------
@@ -136,7 +136,7 @@ class BehavioralState:
         self._change_key = f"__bs_{name}_on_change__"
         self._threshold_key = f"__bs_{name}_on_threshold__"
 
-    def __get__(self, obj: Any, objtype: type | None = None) -> float | "BehavioralState":
+    def __get__(self, obj: Any, objtype: type | None = None) -> float | BehavioralState:
         if obj is None:
             return self  # class-level access returns the descriptor
 
@@ -146,15 +146,22 @@ class BehavioralState:
 
         value, timestamp = data
 
-        if self.decay_rate == 0.0:
+        # Evaluate decay rate dynamically
+        current_decay = (
+            self.decay_rate(obj) if callable(self.decay_rate) else self.decay_rate
+        )
+
+        # Short-circuit if no decay is happening
+        if current_decay == 0.0:
             return value
 
+        # Apply time-based decay
         model = getattr(obj, "model", None)
         if model is None:
             return value
 
         elapsed = model.time - timestamp
-        return self._clamp(value + self.decay_rate * elapsed)
+        return self._clamp(value + current_decay * elapsed)
 
     def __set__(self, obj: Any, value: float | int) -> None:
         value = self._clamp(float(value))
@@ -176,6 +183,7 @@ class BehavioralState:
                     cb(sig)
                 except Exception as exc:
                     import traceback
+
                     traceback.print_exc()
                     print(f"[BehavioralState] on_change callback raised: {exc}")
 
@@ -203,13 +211,16 @@ class BehavioralState:
                 continue
 
             direction = "up" if crossed_up else "down"
-            sig = StateSignal(self.attr_name, obj, old, new, threshold=name, direction=direction)
+            sig = StateSignal(
+                self.attr_name, obj, old, new, threshold=name, direction=direction
+            )
 
             for cb in threshold_callbacks.get(name, []):
                 try:
                     cb(sig)
                 except Exception as exc:
                     import traceback
+
                     traceback.print_exc()
                     print(f"[BehavioralState] threshold callback raised: {exc}")
 
@@ -280,7 +291,9 @@ class BehavioralState:
         obj.__dict__[key].append(callback)
 
     @staticmethod
-    def on_threshold(obj: Any, attr: str, threshold_name: str, callback: Callable) -> None:
+    def on_threshold(
+        obj: Any, attr: str, threshold_name: str, callback: Callable
+    ) -> None:
         """Register a callback fired when a named threshold is crossed.
 
         Args:
@@ -328,8 +341,9 @@ class BehavioralState:
         return result
 
     def __repr__(self) -> str:
+        decay_str = "<callable>" if callable(self.decay_rate) else self.decay_rate
         return (
-            f"BehavioralState(decay_rate={self.decay_rate}, "
+            f"BehavioralState(decay_rate={decay_str}, "
             f"range=[{self.min_value}, {self.max_value}], "
             f"thresholds={list(self.thresholds)})"
         )
