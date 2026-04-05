@@ -258,8 +258,14 @@ class Grid(DiscreteSpace[T]):
             ValueError: If position is outside grid bounds and not a torus
         """
         if self.shared_dims is not None:
-            i = min(int(np.floor((position[0] - self.x_min) / self.dx)), self.dimensions[0] - 1)
-            j = min(int(np.floor((position[1] - self.y_min) / self.dy)), self.dimensions[1] - 1)
+            i = min(
+                int(np.floor((position[0] - self.x_min) / self.dx)),
+                self.dimensions[0] - 1,
+            )
+            j = min(
+                int(np.floor((position[1] - self.y_min) / self.dy)),
+                self.dimensions[1] - 1,
+            )
             coord = (i, j)
         else:
             coord = tuple(np.floor(position).astype(int))
