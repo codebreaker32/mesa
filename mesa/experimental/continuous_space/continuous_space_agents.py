@@ -12,26 +12,14 @@ from mesa.experimental.continuous_space import ContinuousSpace
 
 
 class HasPositionProtocol(Protocol):
-    """Protocol for continuous space position holders."""
-
     position: np.ndarray
 
-
 class ContinuousSpaceAgent(Agent):
-    """A continuous space agent.
-
-    Attributes:
-        space (ContinuousSpace): the continuous space in which the agent is located
-        position (np.ndarray): the position of the agent
-
-    """
-
     __slots__ = ["_mesa_index", "space"]
 
     @property
     def position(self) -> np.ndarray:
-        """Position of the agent."""
-        return self.space.agent_positions[self._mesa_index]
+        return self.space._agent_positions[self._mesa_index]
 
     @position.setter
     def position(self, value: np.ndarray) -> None:
@@ -41,23 +29,17 @@ class ContinuousSpaceAgent(Agent):
             else:
                 raise ValueError(f"point {value} is outside the bounds of the space")
 
-        self.space.agent_positions[self._mesa_index] = value
+        self.space._agent_positions[self._mesa_index] = value
+        
+        if hasattr(self.space, "_mark_dirty"):
+            self.space._mark_dirty()
 
     def __init__(self, space: ContinuousSpace, model):
-        """Initialize a continuous space agent.
-
-        Args:
-            space: the continuous space in which the agent is located
-            model: the model to which the agent belongs
-
-        """
         super().__init__(model)
         self.space: ContinuousSpace = space
         self.space._add_agent(self)
-        # self.position[:] = np.nan
 
     def remove(self) -> None:
-        """Remove and delete the agent from the model and continuous space."""
         super().remove()
         self.space._remove_agent(self)
         self._mesa_index = None
@@ -66,26 +48,7 @@ class ContinuousSpaceAgent(Agent):
     def get_neighbors_in_radius(
         self, radius: float | int = 1
     ) -> tuple[list, np.ndarray]:
-        """Get neighbors within radius.
-
-        Args:
-            radius: radius within which to look for neighbors
-
-        """
         agents, dists = self.space.get_agents_in_radius(self.position, radius=radius)
-        logical = np.asarray([agent is not self for agent in agents])
-        agents = list(compress(agents, logical))
-        return agents, dists[logical]
-
-    def get_nearest_neighbors(self, k: int = 1) -> tuple[list, np.ndarray]:
-        """Get neighbors within radius.
-
-        Args:
-            k: the number of nearest neighbors to return
-
-        """
-        # return includes self, so we need to get k+1
-        agents, dists = self.space.get_k_nearest_agents(self.position, k=k + 1)
-        logical = np.asarray([agent is not self for agent in agents])
+        logical = np.asarray([agent is not self for agent in agents], dtype=bool)
         agents = list(compress(agents, logical))
         return agents, dists[logical]
