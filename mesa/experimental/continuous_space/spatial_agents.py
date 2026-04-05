@@ -60,6 +60,10 @@ class SpatialAgent(ContinuousSpaceAgent):
 
     @position.setter
     def position(self, value: np.ndarray) -> None:
+        # If position didn't change, no need to update
+        if self.position is not None and np.array_equal(self.position, value):
+            return
+        
         ContinuousSpaceAgent.position.fset(self, value)
 
         for space in self._spaces:
