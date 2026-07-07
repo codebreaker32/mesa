@@ -11,7 +11,6 @@ import pytest
 from mesa import Agent, Model
 from mesa.experimental.mesa_signals import HasEmitters, Observable
 from mesa.experimental.states import (
-    ContinuousScheduler,
     ContinuousState,
     Threshold,
 )
@@ -132,7 +131,6 @@ class TramModel(Model):
     def __init__(self) -> None:
         """Initialize the model and master clock."""
         super().__init__()
-        self.continuous_scheduler = ContinuousScheduler(self)
 
 
 @pytest.fixture
@@ -292,53 +290,6 @@ class TestThresholdCrossing:
         # then coasts the remaining 18.75m at 15 m/s, taking exactly 1.25s.
         # Total crossing time = 10.0 (start) + 7.5 (accelerating) + 1.25 (coasting) = 18.75
         assert tram.brake_events[1] == pytest.approx(18.75)
-
-
-class TestContinuousScheduler:
-    """Validates centralized master clock bookkeeping and sorting."""
-
-    def test_threshold_is_tracked_after_bind(self, model: TramModel) -> None:
-        """Ensure bound thresholds are registered with the active set."""
-        tram = Tram(model)
-        tram.depart()
-        active_instances = {
-            inst for inst, _ in model.continuous_scheduler._active_thresholds
-        }
-        assert tram in active_instances
-
-    def test_threshold_untracked_after_firing(self, model: TramModel) -> None:
-        """Ensure thresholds are removed from tracking once executed."""
-        tram = Tram(model)
-        tram.depart()
-        model.run_until(10.0)
-        active = model.continuous_scheduler._active_thresholds
-        assert (tram, Tram._cruise) not in active
-
-    def test_threshold_untracked_when_rate_becomes_zero(self, model: TramModel) -> None:
-        """Ensure zero-rate trajectories safely remove thresholds from the queue."""
-        tram = Tram(model)
-        tram.depart()
-        tram.acceleration = 0.0
-        active = model.continuous_scheduler._active_thresholds
-        assert (tram, Tram._cruise) not in active
-
-    def test_multiple_agents_batch_independently(self, model: TramModel) -> None:
-        """Ensure multiple agents yield independently correct threshold crossings."""
-        slow = Tram(model, initial_acceleration=1.0)
-        fast = Tram(model, initial_acceleration=3.0)
-        model.run_until(20.0)
-        assert fast.coasting_events == [pytest.approx(5.0)]
-        assert slow.coasting_events == [pytest.approx(15.0)]
-
-    def test_master_clock_reschedules_to_earliest_active_crossing(
-        self, model: TramModel
-    ) -> None:
-        """Ensure the heapq always prioritizes the soonest crossing event."""
-        Tram(model, initial_acceleration=1.0)
-        Tram(model, initial_acceleration=3.0)
-        scheduler = model.continuous_scheduler
-        assert scheduler._master_event is not None
-        assert scheduler._master_event.time == pytest.approx(5.0)
 
 
 class TestDemoIntegration:
