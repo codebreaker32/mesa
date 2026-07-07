@@ -9,7 +9,7 @@ check whether a threshold has been crossed.
 
 from mesa import Agent, Model
 from mesa.experimental.mesa_signals import HasEmitters, Observable
-from mesa.experimental.states import ContinuousScheduler, ContinuousState, Threshold
+from mesa.experimental.states import ContinuousState, Threshold
 
 
 class Tram(Agent, HasEmitters):
@@ -175,7 +175,6 @@ class TransitSystem(Model):
             route (list[float]): Ordered station positions, in meters, for the tram to visit.
         """
         super().__init__()
-        self.continuous_scheduler = ContinuousScheduler(self)
         self.tram = Tram(self, route=route)
 
 

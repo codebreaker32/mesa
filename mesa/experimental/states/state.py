@@ -1,7 +1,8 @@
 """Continuous States Descriptor.
 
-Provides piecewise-linear and piecewise-quadratic trajectory tracking, centralized batch scheduling,
-and declarative threshold monitors natively integrated with mesa_signals.
+Provides piecewise-linear and piecewise-quadratic trajectory tracking, and
+declarative threshold monitors natively integrated with mesa_signals and
+the standard Mesa event queue.
 """
 
 from __future__ import annotations
@@ -10,8 +11,10 @@ import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 import mesa.experimental.mesa_signals.core as core
-from mesa.experimental.mesa_signals import ModelSignals, Observable, ObservableSignals
+from mesa.experimental.mesa_signals import Observable, ObservableSignals
 from mesa.experimental.mesa_signals.core import (
     BaseObservable,
     ComputedState,
@@ -19,9 +22,8 @@ from mesa.experimental.mesa_signals.core import (
 )
 
 if TYPE_CHECKING:
-    from mesa import Agent, Model
+    from mesa import Agent
     from mesa.experimental.mesa_signals import HasEmitters
-    from mesa.time import Event
 
 
 class ContinuousState(BaseObservable):
@@ -75,6 +77,18 @@ class ContinuousState(BaseObservable):
     def _get_state(self, instance: HasEmitters) -> dict[str, Any]:
         """Retrieve or initialize the internal state tracking dictionary."""
         if not hasattr(instance, self.private_state_name):
+            # Automatically bind any declarative Thresholds the first time
+            # a continuous state initializes, entirely bypassing the need for a scheduler.
+            if not getattr(instance, "_thresholds_bound", False):
+                instance._thresholds_bound = True
+                cls = instance.__class__
+                for klass in cls.__mro__:
+                    if "_continuous_thresholds" in klass.__dict__:
+                        for t_name in klass.__dict__["_continuous_thresholds"]:
+                            thresh = getattr(cls, t_name, None)
+                            if thresh is not None and hasattr(thresh, "bind"):
+                                thresh.bind(instance)
+
             time = (
                 getattr(instance.model, "_time", 0.0)
                 if hasattr(instance, "model")
@@ -288,117 +302,117 @@ class ContinuousState(BaseObservable):
             )
 
 
-class ContinuousScheduler:
-    """Centralized master clock for batching continuous-state threshold crossings.
+# class ContinuousScheduler:
+#     """Centralized master clock for batching continuous-state threshold crossings.
 
-    A single instance lives at model.continuous_scheduler. It listens for
-    new agents being added and automatically wires up their Threshold descriptors.
-    """
+#     A single instance lives at model.continuous_scheduler. It listens for
+#     new agents being added and automatically wires up their Threshold descriptors.
+#     """
 
-    def __init__(self, model: Model) -> None:
-        """Initialize the ContinuousScheduler.
+#     def __init__(self, model: Model) -> None:
+#         """Initialize the ContinuousScheduler.
 
-        Args:
-            model: The Mesa model instance this scheduler belongs to.
-        """
-        self.model = model
-        self._active_thresholds: set[tuple[Agent, Threshold]] = set()
-        self._master_event: Event | None = None
-        self._execute_batch_ref = self._execute_batch
+#         Args:
+#             model: The Mesa model instance this scheduler belongs to.
+#         """
+#         self.model = model
+#         self._active_thresholds: set[tuple[Agent, Threshold]] = set()
+#         self._master_event: Event | None = None
+#         self._execute_batch_ref = self._execute_batch
 
-        # IoC hook: wire up thresholds for every agent added natively
-        self.model.observe(
-            "agents", ModelSignals.AGENT_ADDED, self._bind_agent_thresholds
-        )
+#         # IoC hook: wire up thresholds for every agent added natively
+#         self.model.observe(
+#             "agents", ModelSignals.AGENT_ADDED, self._bind_agent_thresholds
+#         )
 
-    def _bind_agent_thresholds(self, message: Any) -> None:
-        """Wire up Threshold descriptors for a newly registered agent."""
-        agent = None
+#     def _bind_agent_thresholds(self, message: Any) -> None:
+#         """Wire up Threshold descriptors for a newly registered agent."""
+#         agent = None
 
-        if (
-            hasattr(message, "additional_kwargs")
-            and "args" in message.additional_kwargs
-        ):
-            args = message.additional_kwargs["args"]
-            if args:
-                candidate = args[0]
-                if (
-                    hasattr(candidate, "unique_id")
-                    and hasattr(candidate, "model")
-                    and candidate is not self.model
-                ):
-                    agent = candidate
+#         if (
+#             hasattr(message, "additional_kwargs")
+#             and "args" in message.additional_kwargs
+#         ):
+#             args = message.additional_kwargs["args"]
+#             if args:
+#                 candidate = args[0]
+#                 if (
+#                     hasattr(candidate, "unique_id")
+#                     and hasattr(candidate, "model")
+#                     and candidate is not self.model
+#                 ):
+#                     agent = candidate
 
-        if agent is None:
-            return
+#         if agent is None:
+#             return
 
-        cls = agent.__class__
-        for klass in cls.__mro__:
-            if "_continuous_thresholds" in klass.__dict__:
-                for t_name in klass.__dict__["_continuous_thresholds"]:
-                    threshold = getattr(cls, t_name, None)
-                    if isinstance(threshold, Threshold):
-                        threshold.bind(agent)
+#         cls = agent.__class__
+#         for klass in cls.__mro__:
+#             if "_continuous_thresholds" in klass.__dict__:
+#                 for t_name in klass.__dict__["_continuous_thresholds"]:
+#                     threshold = getattr(cls, t_name, None)
+#                     if isinstance(threshold, Threshold):
+#                         threshold.bind(agent)
 
-    def track(self, instance: Agent, threshold: Threshold) -> None:
-        """Register a threshold and update the master event.
+#     def track(self, instance: Agent, threshold: Threshold) -> None:
+#         """Register a threshold and update the master event.
 
-        Args:
-            instance (Agent): The agent possessing the threshold.
-            threshold (Threshold): The threshold descriptor to track.
-        """
-        self._active_thresholds.add((instance, threshold))
-        self._update_master_clock()
+#         Args:
+#             instance (Agent): The agent possessing the threshold.
+#             threshold (Threshold): The threshold descriptor to track.
+#         """
+#         self._active_thresholds.add((instance, threshold))
+#         self._update_master_clock()
 
-    def untrack(self, instance: Agent, threshold: Threshold) -> None:
-        """Deregister a threshold from active tracking.
+#     def untrack(self, instance: Agent, threshold: Threshold) -> None:
+#         """Deregister a threshold from active tracking.
 
-        Args:
-            instance (Agent): The agent possessing the threshold.
-            threshold (Threshold): The threshold descriptor to untrack.
-        """
-        self._active_thresholds.discard((instance, threshold))
+#         Args:
+#             instance (Agent): The agent possessing the threshold.
+#             threshold (Threshold): The threshold descriptor to untrack.
+#         """
+#         self._active_thresholds.discard((instance, threshold))
 
-    def _update_master_clock(self) -> None:
-        """Reschedule the master event to the earliest active crossing time."""
-        if not self._active_thresholds:
-            return
+#     def _update_master_clock(self) -> None:
+#         """Reschedule the master event to the earliest active crossing time."""
+#         if not self._active_thresholds:
+#             return
 
-        next_time = min(
-            getattr(inst, thresh.time_attr) for inst, thresh in self._active_thresholds
-        )
+#         next_time = min(
+#             getattr(inst, thresh.time_attr) for inst, thresh in self._active_thresholds
+#         )
 
-        if math.isinf(next_time):
-            return
+#         if math.isinf(next_time):
+#             return
 
-        # Only replace the existing event if the new crossing is strictly earlier
-        if self._master_event is None or next_time < self._master_event.time:
-            if self._master_event is not None:
-                try:
-                    self._master_event.cancel()
-                except Exception:
-                    pass
-            self._master_event = self.model.schedule_event(
-                self._execute_batch_ref, at=next_time
-            )
+#         # Only replace the existing event if the new crossing is strictly earlier
+#         if self._master_event is None or next_time < self._master_event.time:
+#             if self._master_event is not None:
+#                 try:
+#                     self._master_event.cancel()
+#                 except Exception:
+#                     pass
+#             self._master_event = self.model.schedule_event(
+#                 self._execute_batch_ref, at=next_time
+#             )
 
-    def _execute_batch(self) -> None:
-        """Fire all thresholds whose crossing time has been reached."""
-        self._master_event = None
-        current_time = self.model.time
+#     def _execute_batch(self) -> None:
+#         """Fire all thresholds whose crossing time has been reached."""
+#         self._master_event = None
+#         current_time = self.model.time
 
-        triggered = [
-            (inst, thresh)
-            for inst, thresh in self._active_thresholds
-            if getattr(inst, thresh.time_attr) <= current_time
-        ]
+#         triggered = [
+#             (inst, thresh)
+#             for inst, thresh in self._active_thresholds
+#             if getattr(inst, thresh.time_attr) <= current_time
+#         ]
 
-        self.model.random.shuffle(triggered)
+#         self.model.random.shuffle(triggered)
 
-        for inst, thresh in triggered:
-            thresh.execute(inst)
+#         for inst, thresh in triggered:
+#             thresh.execute(inst)
 
-        self._update_master_clock()
+#         self._update_master_clock()
 
 
 class Threshold:
@@ -430,6 +444,7 @@ class Threshold:
         self.time_attr = f"_{name}_projected_time"
         self.limit_attr = f"_{name}_limit_override"
         self.fired_attr = f"_{name}_fired"
+        self.event_attr = f"_{name}_event"
 
         # Guard against mutating an inherited _continuous_thresholds list
         if "_continuous_thresholds" not in owner.__dict__:
@@ -471,19 +486,22 @@ class Threshold:
 
         setattr(instance, self.time_attr, math.inf)
         setattr(instance, self.fired_attr, False)
-
-        if not hasattr(instance.model, "continuous_scheduler"):
-            instance.model.continuous_scheduler = ContinuousScheduler(instance.model)
+        setattr(instance, self.event_attr, None)
 
         def _recalc(message: Any = None, _inst: Agent = instance) -> None:
             self.recalculate(_inst)
 
+        def _trigger(_inst: Agent = instance) -> None:
+            self.execute(_inst)
+
+        # Strong references to prevent weakref event queue from silently dropping them
         setattr(instance, f"_{self.public_name}_recalc", _recalc)
+        setattr(instance, f"_{self.public_name}_trigger", _trigger)
 
         instance.observe(
             self.state.public_name,
             ObservableSignals.CHANGED,
-            getattr(instance, f"_{self.public_name}_recalc"),
+            _recalc,
         )
 
         self.recalculate(instance)
@@ -499,14 +517,9 @@ class Threshold:
 
         Solves the intersection root using 0.5*a*t^2 + v*t + (x0 - limit) = 0.
         """
-        if not hasattr(instance.model, "continuous_scheduler"):
-            return
-
         # Ignore recalculate calls if already fired and awaiting a rearm
         if getattr(instance, self.fired_attr, False):
             return
-
-        scheduler = instance.model.continuous_scheduler
 
         state_dict = self.state._get_state(instance)
         self.state._refresh_rate_if_dirty(state_dict, instance)
@@ -532,7 +545,7 @@ class Threshold:
             discriminant = B**2 - 4 * A * C
 
             # Allow microscopic negative discriminants due to float inaccuracies near tangent touches
-            if discriminant >= -1e-12:
+            if discriminant >= -np.finfo(float).eps:
                 D = max(0.0, discriminant)
                 sqrt_D = math.sqrt(D)
 
@@ -540,7 +553,7 @@ class Threshold:
                 t2 = (-B + sqrt_D) / (2 * A)
 
                 for t in (t1, t2):
-                    if t >= -1e-12:
+                    if t >= -np.finfo(float).eps:
                         t_clean = max(0.0, t)
                         # Calculate exact velocity at the moment of intersection: v(t) = v0 + a*t
                         v_cross = B + a * t_clean
@@ -559,17 +572,36 @@ class Threshold:
             future_crossings.append(t)
 
         if not future_crossings:
-            self._never_crosses(instance, scheduler)
+            self._never_crosses(instance)
         else:
             time_to_cross = min(future_crossings)
             projected_time = instance.model.time + time_to_cross
             setattr(instance, self.time_attr, projected_time)
-            scheduler.track(instance, self)
 
-    def _never_crosses(self, instance: Agent, scheduler: ContinuousScheduler) -> None:
+            # Cancel any previously tracked native event for this threshold
+            old_event = getattr(instance, self.event_attr, None)
+            if old_event is not None:
+                try:
+                    old_event.cancel()
+                except Exception:
+                    pass
+
+            # Retrieve the trigger
+            trigger_func = getattr(instance, f"_{self.public_name}_trigger")
+            new_event = instance.model.schedule_event(trigger_func, at=projected_time)
+            setattr(instance, self.event_attr, new_event)
+
+    def _never_crosses(self, instance: Agent) -> None:
         """Mark this threshold as having no future crossing and stop tracking it."""
         setattr(instance, self.time_attr, math.inf)
-        scheduler.untrack(instance, self)
+
+        old_event = getattr(instance, self.event_attr, None)
+        if old_event is not None:
+            try:
+                old_event.cancel()
+            except Exception:
+                pass
+        setattr(instance, self.event_attr, None)
 
     def execute(self, instance: Agent) -> None:
         """Fire the callback and remove this threshold from active tracking.
@@ -579,7 +611,7 @@ class Threshold:
         """
         setattr(instance, self.time_attr, math.inf)
         setattr(instance, self.fired_attr, True)
-        instance.model.continuous_scheduler.untrack(instance, self)
+        setattr(instance, self.event_attr, None)
 
         callback_method = getattr(instance, self.callback)
         callback_method()
