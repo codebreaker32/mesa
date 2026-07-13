@@ -1,7 +1,7 @@
 """Tram Route Model
 
 A model of a tram running a multi-station route using continuous-time
-kinematics layer. The tram accelerates to a cruise speed, coasts, brakes at an
+kinematics. The tram accelerates to a cruise speed, coasts, brakes at an
 analytically-computed point before each station, and dwells before departing
 for the next one -- all without the model needing to step on every tick to
 check whether a threshold has been crossed.
@@ -15,24 +15,26 @@ from mesa.experimental.states import ContinuousState, Threshold
 class Tram(Agent, HasEmitters):
     """A tram travelling an ordered route of station positions.
 
-    Args:
-        acceleration (Observable): Current acceleration, m/s^2. The control
-            input driving speed; positive while departing, negative while
-            braking, zero while coasting or stopped.
+    Attributes:
+        acceleration (Observable): Current acceleration, m/s^2.
         speed (ContinuousState): Current speed, m/s.
         position (ContinuousState): Current position along the route, m.
             Chained off speed (position' = speed).
+        brake_point (Observable): Position at which braking begins for the
+            current segment, m. Updated at the start of each departure;
+            the _brake_point threshold reacts to changes automatically.
     """
 
     acceleration = Observable(fallback_value=0.0)
     speed = ContinuousState(fallback_value=0.0, rate=lambda a: a.acceleration)
     position = ContinuousState(fallback_value=0.0, rate=lambda a: a.speed)
+    brake_point = Observable(fallback_value=float("inf"))
 
     _cruise = Threshold(
         state=speed, limit=15.0, callback="start_coasting", direction="rising"
     )
     _brake_point = Threshold(
-        state=position, limit=float("inf"), callback="brake", direction="rising"
+        state=position, limit=brake_point, callback="brake", direction="rising"
     )
     _stop = Threshold(
         state=speed, limit=0.0, callback="arrive_at_station", direction="falling"
@@ -80,8 +82,7 @@ class Tram(Agent, HasEmitters):
         self.acceleration = 0.0
         self.speed = 0.0
         self.position = route[0]
-
-        Tram._cruise.set_limit(self, self.cruise_speed)
+        self.brake_point = float("inf")
 
     @property
     def next_station(self) -> float:
@@ -101,24 +102,14 @@ class Tram(Agent, HasEmitters):
         return self.cruise_speed**2 / (2.0 * self.deceleration_rate)
 
     def depart(self) -> None:
-        """Accelerate towards the next station.
-
-        Arms the brake-point threshold for this segment and re-arms the
-        cruise and stop thresholds, since each already fired once for the
-        previous segment.
-        """
+        """Accelerate towards the next station."""
         target = self.next_station
         print(
             f"[t={self.model.time:.2f}] Tram {self.unique_id} departing "
             f"(pos={self.position:.2f}) towards station at {target:.2f}m. "
             f"Accelerating at {self.acceleration_rate:.1f} m/s^2."
         )
-
-        brake_at = target - self.braking_distance()
-        Tram._brake_point.set_limit(self, brake_at)
-        Tram._cruise.rearm(self)
-        Tram._stop.rearm(self)
-
+        self.brake_point = target - self.braking_distance()
         self.acceleration = self.acceleration_rate
 
     def start_coasting(self) -> None:
@@ -136,6 +127,7 @@ class Tram(Agent, HasEmitters):
             f"(pos={self.position:.2f}). Applying brakes at "
             f"-{self.deceleration_rate:.1f} m/s^2."
         )
+        self.brake_point = float("inf")
         self.acceleration = -self.deceleration_rate
 
     def arrive_at_station(self) -> None:
@@ -160,12 +152,7 @@ class TransitSystem(Model):
     """A minimal model containing a single tram running a multi-station route.
 
     Args:
-        continuous_scheduler (ContinuousScheduler): Batches threshold-crossing
-            events for all continuous-state agents in the model.
         tram (Tram): The tram running the route.
-        event_count_log (list[int]): Size of the native event queue, recorded
-            on each call to log_queue_health(); a diagnostic showing that the
-            queue stays small regardless of how many crossings occur.
     """
 
     def __init__(self, route: list[float]) -> None:

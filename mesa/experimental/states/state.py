@@ -416,12 +416,17 @@ class ContinuousState(BaseObservable):
 
 
 class Threshold:
-    """Class-level descriptor that fires a callback when a ContinuousState crosses a limit."""
+    """Class-level descriptor that fires a callback when a ContinuousState crosses a limit.
+
+    The limit may be a fixed float or an Observable attribute on the agent.
+    When the limit is an Observable, the threshold recalculates automatically
+    whenever the limit changes -- no imperative re-arming calls needed.
+    """
 
     def __init__(
         self,
         state: ContinuousState,
-        limit: float,
+        limit: float | Observable,
         callback: str,
         direction: str = "crossing",
     ) -> None:
@@ -429,8 +434,10 @@ class Threshold:
 
         Args:
             state: The ContinuousState descriptor to monitor.
-            limit: The threshold value at which the callback fires.
-            callback: Name of the agent method to call.
+            limit: The crossing value, either a fixed float or an Observable
+                on the agent. When an Observable, the projected crossing time
+                updates automatically whenever the limit changes.
+            callback: Name of the agent method to call when the limit is crossed.
             direction: The boundary direction constraint ("rising", "falling", or "crossing").
         """
         self.state = state
@@ -442,41 +449,29 @@ class Threshold:
         """Bind the descriptor and register it to the class blueprint."""
         self.public_name = name
         self.time_attr = f"_{name}_projected_time"
-        self.limit_attr = f"_{name}_limit_override"
-        self.fired_attr = f"_{name}_fired"
         self.event_attr = f"_{name}_event"
 
-        # Guard against mutating an inherited _continuous_thresholds list
         if "_continuous_thresholds" not in owner.__dict__:
             owner._continuous_thresholds = []
         if name not in owner._continuous_thresholds:
             owner._continuous_thresholds.append(name)
 
-    def _get_limit(self, instance: Agent) -> float:
-        """Retrieve the active limit override or default for this instance."""
-        return getattr(instance, self.limit_attr, self.limit)
+    def _resolve_limit(self, instance: Agent) -> float:
+        """Return the current limit value for this instance.
 
-    def rearm(self, instance: Agent) -> None:
-        """Clear the fired flag and recompute the projected crossing time.
-
-        Args:
-            instance (Agent): The instance to rearm.
+        If the limit is an Observable descriptor, reads its current value
+        from the instance. Otherwise returns the fixed float.
         """
-        setattr(instance, self.fired_attr, False)
-        self.recalculate(instance)
-
-    def set_limit(self, instance: Agent, value: float) -> None:
-        """Set a runtime limit override and immediately rearm.
-
-        Args:
-            instance (Agent): The instance to modify.
-            value (float): The new numerical limit.
-        """
-        setattr(instance, self.limit_attr, value)
-        self.rearm(instance)
+        if isinstance(self.limit, BaseObservable):
+            return self.limit.__get__(instance, type(instance))
+        return self.limit
 
     def bind(self, instance: Agent) -> None:
         """Wire up this threshold for the instance via the signal bus.
+
+        Subscribes to CHANGED signals from both the watched ContinuousState
+        and, when the limit is an Observable, from the limit itself -- so
+        the projected crossing time updates automatically whenever either changes.
 
         Args:
             instance (Agent): The instance to bind to.
@@ -485,7 +480,6 @@ class Threshold:
             return
 
         setattr(instance, self.time_attr, math.inf)
-        setattr(instance, self.fired_attr, False)
         setattr(instance, self.event_attr, None)
 
         def _recalc(message: Any = None, _inst: Agent = instance) -> None:
@@ -498,11 +492,10 @@ class Threshold:
         setattr(instance, f"_{self.public_name}_recalc", _recalc)
         setattr(instance, f"_{self.public_name}_trigger", _trigger)
 
-        instance.observe(
-            self.state.public_name,
-            ObservableSignals.CHANGED,
-            _recalc,
-        )
+        instance.observe(self.state.public_name, ObservableSignals.CHANGED, _recalc)
+
+        if isinstance(self.limit, BaseObservable):
+            instance.observe(self.limit.public_name, ObservableSignals.CHANGED, _recalc)
 
         self.recalculate(instance)
 
@@ -517,17 +510,13 @@ class Threshold:
 
         Solves the intersection root using 0.5*a*t^2 + v*t + (x0 - limit) = 0.
         """
-        # Ignore recalculate calls if already fired and awaiting a rearm
-        if getattr(instance, self.fired_attr, False):
-            return
-
         state_dict = self.state._get_state(instance)
         self.state._refresh_rate_if_dirty(state_dict, instance)
         v = state_dict["current_rate"]
         a = state_dict["second_order_rate"]
 
         current_value = self.state.__get__(instance)
-        limit = self._get_limit(instance)
+        limit = self._resolve_limit(instance)
 
         valid_times = []
 
@@ -604,13 +593,12 @@ class Threshold:
         setattr(instance, self.event_attr, None)
 
     def execute(self, instance: Agent) -> None:
-        """Fire the callback and remove this threshold from active tracking.
+        """Fire the callback when a crossing is reached.
 
         Args:
             instance (Agent): The instance whose threshold was triggered.
         """
         setattr(instance, self.time_attr, math.inf)
-        setattr(instance, self.fired_attr, True)
         setattr(instance, self.event_attr, None)
 
         callback_method = getattr(instance, self.callback)
