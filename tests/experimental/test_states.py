@@ -20,18 +20,19 @@ class Tram(Agent, HasEmitters):
     """Mirrors the Tram from demo.py for testing.
 
     Validates chained continuous states (position' = speed, speed' = acceleration)
-    and dynamic threshold limit overrides.
+    and dynamic threshold limit overrides natively using Observables.
     """
 
     acceleration = Observable(fallback_value=0.0)
     speed = ContinuousState(fallback_value=0.0, rate=lambda a: a.acceleration)
     position = ContinuousState(fallback_value=0.0, rate=lambda a: a.speed)
+    brake_point = Observable(fallback_value=float("inf"))
 
     _cruise = Threshold(
         state=speed, limit=15.0, callback="start_coasting", direction="rising"
     )
     _brake_point = Threshold(
-        state=position, limit=float("inf"), callback="brake", direction="rising"
+        state=position, limit=brake_point, callback="brake", direction="rising"
     )
     _stop = Threshold(
         state=speed, limit=0.0, callback="arrive_at_station", direction="falling"
@@ -48,6 +49,7 @@ class Tram(Agent, HasEmitters):
         self.acceleration = initial_acceleration
         self.speed = 0.0
         self.position = 0.0
+        self.brake_point = float("inf")
         self.coasting_events: list[float] = []
         self.brake_events: list[float] = []
         self.stop_events: list[float] = []
@@ -237,7 +239,7 @@ class TestThresholdCrossing:
     def test_quadratic_threshold_fires_at_correct_time(self, model: TramModel) -> None:
         """Ensure parabolic intersections (acceleration) are solved exactly."""
         tram = Tram(model)
-        type(tram)._brake_point.set_limit(tram, 25.0)
+        tram.brake_point = 25.0
         tram.depart()  # acc = 2.0
         model.run_until(10.0)
 
@@ -258,7 +260,7 @@ class TestThresholdCrossing:
         tram = Tram(model)
         tram.speed = 10.0
         tram.position = 0.0
-        type(tram)._brake_point.set_limit(tram, 25.0)
+        tram.brake_point = 25.0
 
         # Distance to stop: v^2 / 2a = 100 / 4 = 25.
         # Tram will exactly touch 25.0 as speed hits 0.0, then reverse.
@@ -270,15 +272,15 @@ class TestThresholdCrossing:
         assert tram.brake_events == []
 
     def test_dynamic_limit_rearming(self, model: TramModel) -> None:
-        """Ensure set_limit properly recalculates and rearms a previously fired threshold."""
+        """Ensure setting a declarative limit properly recalculates and arms the threshold."""
         tram = Tram(model)
-        type(tram)._brake_point.set_limit(tram, 25.0)
+        tram.brake_point = 25.0
         tram.depart()
         model.run_until(10.0)
         assert len(tram.brake_events) == 1
 
         # Change limit to 100.0 and re-accelerate
-        type(tram)._brake_point.set_limit(tram, 100.0)
+        tram.brake_point = 100.0
         tram.speed = 0.0
         tram.position = 25.0
         tram.depart()
@@ -300,7 +302,7 @@ class TestDemoIntegration:
         tram = Tram(model)
 
         # Route logic
-        type(tram)._brake_point.set_limit(tram, 162.50)  # 200 - 37.5 braking distance
+        tram.brake_point = 162.50  # 200 - 37.5 braking distance
         tram.depart()
 
         model.run_until(20.0)
