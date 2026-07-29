@@ -601,7 +601,7 @@ class Threshold:
         if old_event is not None:
             with contextlib.suppress(Exception):
                 old_event.cancel()
-                
+
         setattr(instance, self.event_attr, None)
 
     def execute(self, instance: Agent) -> None:
