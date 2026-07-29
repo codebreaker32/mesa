@@ -1,4 +1,4 @@
-"""Tram Route Model
+"""Tram Route Model.
 
 A model of a tram running a multi-station route using continuous-time
 kinematics. The tram accelerates to a cruise speed, coasts, brakes at an

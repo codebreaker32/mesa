@@ -7,6 +7,7 @@ the standard Mesa event queue.
 
 from __future__ import annotations
 
+import contextlib
 import math
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -529,24 +530,24 @@ class Threshold:
                     valid_times.append((t, v))
         else:
             # Quadratic Case
-            A = 0.5 * a
-            B = v
-            C = current_value - limit
-            discriminant = B**2 - 4 * A * C
+            qa = 0.5 * a
+            qb = v
+            qc = current_value - limit
+            discriminant = qb**2 - 4 * qa * qc
 
             # Allow microscopic negative discriminants due to float inaccuracies near tangent touches
             if discriminant >= -np.finfo(float).eps:
-                D = max(0.0, discriminant)
-                sqrt_D = math.sqrt(D)
+                disc = max(0.0, discriminant)
+                sqrt_disc = math.sqrt(disc)
 
-                t1 = (-B - sqrt_D) / (2 * A)
-                t2 = (-B + sqrt_D) / (2 * A)
+                t1 = (-qb - sqrt_disc) / (2 * qa)
+                t2 = (-qb + sqrt_disc) / (2 * qa)
 
                 for t in (t1, t2):
                     if t >= -np.finfo(float).eps:
                         t_clean = max(0.0, t)
                         # Calculate exact velocity at the moment of intersection: v(t) = v0 + a*t
-                        v_cross = B + a * t_clean
+                        v_cross = qb + a * t_clean
                         valid_times.append((t_clean, v_cross))
 
         future_crossings = []
@@ -584,10 +585,8 @@ class Threshold:
             # Cancel any previously tracked native event for this threshold
             old_event = getattr(instance, self.event_attr, None)
             if old_event is not None:
-                try:
+                with contextlib.suppress(Exception):
                     old_event.cancel()
-                except Exception:
-                    pass
 
             # Retrieve the trigger
             trigger_func = getattr(instance, f"_{self.public_name}_trigger")
@@ -600,10 +599,9 @@ class Threshold:
 
         old_event = getattr(instance, self.event_attr, None)
         if old_event is not None:
-            try:
+            with contextlib.suppress(Exception):
                 old_event.cancel()
-            except Exception:
-                pass
+                
         setattr(instance, self.event_attr, None)
 
     def execute(self, instance: Agent) -> None:
