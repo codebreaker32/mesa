@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+import mesa.experimental.mesa_signals.core as signals_core
 from mesa import Agent, Model
 from mesa.experimental.mesa_signals import HasEmitters, Observable
+from mesa.experimental.mesa_signals.core import _hashable_signal
 from mesa.experimental.states import (
     ContinuousState,
     Threshold,
@@ -324,3 +326,116 @@ class TestDemoIntegration:
         # Ensure final mathematical state is accurate
         assert tram.speed == pytest.approx(0.0)
         assert tram.position == pytest.approx(200.0)
+
+
+class TestNamespaceCollision:
+    """Validates the shadow rate attribute guard in ContinuousState.__set_name__."""
+
+    def test_colliding_class_attribute_raises(self) -> None:
+        """Ensure a pre-existing `<name>_rate` attribute is rejected."""
+        with pytest.raises(AttributeError, match="Namespace collision"):
+
+            class Colliding(Agent, HasEmitters):
+                speed_rate = 1.0
+                speed = ContinuousState(fallback_value=0.0, rate=1.0)
+
+    def test_colliding_slot_raises(self) -> None:
+        """Ensure the guard inspects __slots__ as well as the class dict."""
+        with pytest.raises(AttributeError, match="Namespace collision"):
+
+            class SlottedColliding(Agent, HasEmitters):
+                __slots__ = ("speed_rate",)
+
+                speed = ContinuousState(fallback_value=0.0, rate=1.0)
+
+
+class TestRateResolutionFailures:
+    """Validates which AttributeErrors are absorbed as init races and which propagate."""
+
+    def test_unassigned_observable_is_absorbed_as_at_rest(
+        self, model: TramModel
+    ) -> None:
+        """Ensure a rate reading a not-yet-assigned Observable resolves to 0.0."""
+        tram = Tram(model, initial_acceleration=2.0)
+        descriptor = type(tram).speed
+
+        # Reproduce the window during __init__ where the backing store is absent.
+        del tram._acceleration
+        descriptor._get_state(tram)["rate_computed"].is_dirty = True
+
+        assert descriptor.get_rate(tram) == 0.0
+
+    def test_missing_private_non_observable_is_not_a_race(
+        self, model: TramModel
+    ) -> None:
+        """Ensure a private name that is not an Observable is not absorbed."""
+        tram = Tram(model)
+        descriptor = type(tram).speed
+
+        assert not descriptor._is_uninitialized_observable_race(
+            tram, AttributeError("no attribute '_ghost'", name="_ghost")
+        )
+
+
+class TestCyclicalDependency:
+    """Validates cycle detection when a computation writes the state it reads."""
+
+    def test_write_from_dependent_computation_raises(
+        self, model: TramModel, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure assigning a state that the active computation depends on raises."""
+        tram = Tram(model)
+        computed = type(tram).position._get_state(tram)["rate_computed"]
+
+        # Stand in for being inside an evaluation that has already read position.
+        monkeypatch.setattr(signals_core, "CURRENT_COMPUTED", computed)
+        signals_core.PROCESSING_SIGNALS.add(_hashable_signal(tram, "position"))
+        try:
+            with pytest.raises(ValueError, match="Cyclical dependency"):
+                tram.position = 1.0
+        finally:
+            signals_core.PROCESSING_SIGNALS.clear()
+
+
+class TestThresholdBinding:
+    """Validates the threshold binding lifecycle and class-level registration."""
+
+    def test_bind_is_idempotent(self, model: TramModel) -> None:
+        """Ensure re-binding an already-bound threshold leaves the projection intact."""
+        tram = Tram(model)
+        tram.brake_point = 50.0
+        tram.depart()
+        projected = tram._brake_point
+
+        type(tram)._brake_point.bind(tram)
+
+        assert tram._brake_point == projected
+
+    def test_registration_is_idempotent(self) -> None:
+        """Ensure re-running __set_name__ does not duplicate the registry entry."""
+        Tram.__dict__["_cruise"].__set_name__(Tram, "_cruise")
+
+        assert Tram._continuous_thresholds.count("_cruise") == 1
+
+
+class TestApexRejection:
+    """Validates that a tangent apex is rejected under the 'crossing' direction."""
+
+    def test_crossing_direction_rejects_tangent(
+        self, model: TramModel, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a trajectory that only touches the limit never fires."""
+        monkeypatch.setattr(Tram.__dict__["_brake_point"], "direction", "crossing")
+        tram = Tram(model)
+
+        # Arms a linear crossing at t=2.5, then re-solves to a tangent touch:
+        # position peaks at exactly 25.0 at t=5.0 with zero velocity.
+        tram.brake_point = 25.0
+        tram.speed = 10.0
+        tram.acceleration = -2.0
+
+        model.run_until(5.0)
+        assert tram.position == pytest.approx(25.0)
+
+        model.run_until(10.0)
+        assert tram.brake_events == []

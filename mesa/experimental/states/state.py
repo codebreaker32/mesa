@@ -134,16 +134,13 @@ class ContinuousState(BaseObservable):
         return getattr(instance, self.private_state_name)
 
     def _find_chained_rate(
-        self, comp_state: ComputedState | None, instance: HasEmitters
+        self, comp_state: ComputedState, instance: HasEmitters
     ) -> float:
         """Return the rate-of-the-rate if this state's rate depends on another ContinuousState.
 
         Scans the dependencies the rate callable's ComputedState recorded for one
         that is a ContinuousState descriptor on the instance's class.
         """
-        if comp_state is None:
-            return 0.0
-
         for parent, attrs in comp_state.parents.items():
             for attr_name in attrs:
                 descriptor = getattr(type(parent), attr_name, None)
@@ -177,8 +174,7 @@ class ContinuousState(BaseObservable):
         state["base_value"] = current_value
         state["last_time"] = current_time
 
-        if state["rate_computed"] is not None:
-            self._refresh_rate_if_dirty(state, instance)
+        self._refresh_rate_if_dirty(state, instance)
 
         # Do NOT go through the batching aggregator path here, as old==new would be swallowed.
         signal = core.Message(
@@ -187,8 +183,7 @@ class ContinuousState(BaseObservable):
             signal_type=ObservableSignals.CHANGED,
             additional_kwargs={"old": current_value, "new": current_value},
         )
-        if not instance._suppress:
-            instance._mesa_notify(signal)
+        instance._mesa_notify(signal)
 
     def _is_uninitialized_observable_race(
         self, instance: HasEmitters, exc: AttributeError
@@ -211,14 +206,7 @@ class ContinuousState(BaseObservable):
 
     def _evaluate_rate(self, instance: HasEmitters) -> float:
         """Evaluate the rate callable using diffing engine to track dependencies."""
-        state = self._get_state(instance)
-        comp_state: ComputedState | None = state.get("rate_computed")
-
-        if comp_state is None:
-            return float(self._rate_input)
-
-        if not comp_state.is_dirty:
-            return float(comp_state.value)
+        comp_state: ComputedState = self._get_state(instance)["rate_computed"]
 
         try:
             comp_state.evaluate()
