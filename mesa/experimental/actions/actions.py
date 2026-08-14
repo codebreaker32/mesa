@@ -4,8 +4,8 @@ An Action represents something an agent does over time. It integrates with
 Mesa's event scheduling system for precise timing and supports interruption
 with progress tracking and optional resumption.
 
-Actions are subclassable: override on_start(), on_complete(), and
-on_interrupt() to define behavior.
+Actions are subclassable: override on_start(), on_complete(),
+on_interrupt(), and on_fail() to define behavior.
 
 Example::
 
@@ -24,7 +24,7 @@ Example::
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import IntEnum, auto
 from typing import TYPE_CHECKING
 
@@ -40,6 +40,7 @@ class ActionState(IntEnum):
     ACTIVE = auto()
     COMPLETED = auto()
     INTERRUPTED = auto()
+    FAILED = auto()
 
 
 class Action:
@@ -61,7 +62,10 @@ class Action:
         priority: Importance level. Higher = more important. May be a
             callable(agent) -> float, resolved at start time.
         interruptible: Whether higher-priority actions can preempt this.
-        state: Current lifecycle state (PENDING, ACTIVE, COMPLETED, INTERRUPTED).
+        requirements: Predicates the world must satisfy for the action to
+            run. Each is a callable(agent) -> bool.
+        state: Current lifecycle state (PENDING, ACTIVE, COMPLETED,
+            INTERRUPTED, FAILED).
         progress: Time fraction completed, 0.0 to 1.0. Computed live
             while the action is active.
 
@@ -79,6 +83,9 @@ class Action:
         name: str | None = None,
         priority: float | Callable[[Agent], float] = 0.0,
         interruptible: bool = True,
+        requirements: Callable[[Agent], bool]
+        | Iterable[Callable[[Agent], bool]]
+        | None = None,
     ) -> None:
         """Initialize an Action.
 
@@ -92,11 +99,19 @@ class Action:
                 a float or a callable that receives the agent and returns
                 a float. Resolved when start() is called.
             interruptible: If False, interrupt() will fail and return False.
+            requirements: A single callable(agent) -> bool, or an iterable
+                of them.
         """
         self.agent = agent
         self.model = agent.model
         self.interruptible = interruptible
         self._name: str | None = name
+
+        if requirements is None:
+            requirements = []
+        elif callable(requirements):
+            requirements = [requirements]
+        self.requirements: list[Callable[[Agent], bool]] = list(requirements)
 
         # Store raw values (may be callables, resolved at start)
         self._duration_spec = duration
@@ -162,6 +177,11 @@ class Action:
         """Whether this action can be resumed (interrupted, not completed)."""
         return self.state is ActionState.INTERRUPTED and self._progress < 1.0
 
+    @property
+    def has_failed(self) -> bool:
+        """Whether a requirement did not hold, at start or at completion."""
+        return self.state is ActionState.FAILED
+
     # --- Lifecycle methods (override in subclasses) ---
 
     def on_start(self) -> None:
@@ -206,6 +226,19 @@ class Action:
             necessarily cancelled, not interrupted.
         """
 
+    def on_fail(self) -> None:
+        """Called when a requirement does not hold.
+
+        Override to release anything the action
+        reserved, or to record the attempt.
+
+        Notes:
+            Check self.progress to tell the two failures apart: it is 1.0
+            when the action ran its full duration and only then found the
+            requirement broken, and below 1.0 when the action never got to
+            run this attempt.
+        """
+
     # --- Execution (called by Agent, not typically by users) ---
 
     def start(self) -> Action:
@@ -215,11 +248,16 @@ class Action:
         starts from progress=0. On resume (INTERRUPTED): continues from
         existing progress with remaining duration.
 
+        If a requirement does not hold the action moves to FAILED instead,
+        firing on_fail() rather than on_start() or on_resume(). Inspect
+        state after starting rather than assuming the action is ACTIVE.
+
         Returns:
             Self, for chaining.
 
         Raises:
             ValueError: If the action is not in PENDING or INTERRUPTED state.
+                A FAILED action cannot be restarted; create a new one.
         """
         resuming = self.state is ActionState.INTERRUPTED
 
@@ -228,6 +266,12 @@ class Action:
                 f"Cannot start action in {self.state.name} state. "
                 f"Only PENDING or INTERRUPTED actions can be started."
             )
+
+        # Gate entry before duration and priority are resolved, so a failing
+        # action never fires on_start() nor schedules a completion event.
+        if not self._requirements_met():
+            self._fail()
+            return self
 
         # Resolve callables on first start only
         if not resuming:
@@ -335,13 +379,33 @@ class Action:
             self._event.cancel()
             self._event = None
 
+    def _requirements_met(self) -> bool:
+        """Whether every requirement holds right now."""
+        return all(requirement(self.agent) for requirement in self.requirements)
+
+    def _fail(self) -> None:
+        """Move to FAILED, release the agent, and fire on_fail()."""
+        self.state = ActionState.FAILED
+
+        if self.agent.current_action is self:
+            self.agent.current_action = None
+
+        self.on_fail()
+
     def _do_complete(self) -> None:
         """Handle normal completion. Called by the scheduled event."""
         if self.state is not ActionState.ACTIVE:
             return
 
+        # Progress reaches 1.0 even if a requirement broke: the full duration
+        # elapsed, only the effect is withheld.
         self._progress = 1.0
         self._event = None
+
+        if not self._requirements_met():
+            self._fail()
+            return
+
         self.state = ActionState.COMPLETED
 
         # Clear agent's reference so it's no longer busy

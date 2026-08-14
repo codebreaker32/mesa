@@ -18,6 +18,7 @@ class TrackedAction(Action):
         self.resume_count = 0
         self.completed = False
         self.interrupted = False
+        self.failed = False
         self.interrupt_progress = None
 
     def on_start(self):
@@ -32,6 +33,9 @@ class TrackedAction(Action):
     def on_interrupt(self, progress):
         self.interrupted = True
         self.interrupt_progress = progress
+
+    def on_fail(self):
+        self.failed = True
 
 
 def make_model_and_agent():
@@ -774,6 +778,233 @@ class TestEdgeCases:
         assert "ACTIVE" in repr(action)
 
 
+# --- Requirements and failure ---
+
+
+class TestRequirementsSetup:
+    def test_no_requirements_by_default(self):
+        _model, agent = make_model_and_agent()
+        assert Action(agent).requirements == []
+
+    def test_single_callable_is_wrapped(self):
+        _model, agent = make_model_and_agent()
+        action = Action(agent, requirements=lambda a: True)
+        assert len(action.requirements) == 1
+
+    def test_iterable_is_copied(self):
+        """The action keeps its own list, not the caller's."""
+        _model, agent = make_model_and_agent()
+        shared = [lambda a: True]
+        action = Action(agent, requirements=shared)
+        shared.append(lambda a: False)
+        assert len(action.requirements) == 1
+
+    def test_subclass_can_assign_requirements(self):
+        _model, agent = make_model_and_agent()
+
+        class Picky(Action):
+            def __init__(self, agent):
+                super().__init__(agent)
+                self.requirements = [lambda a: a.ready]
+
+        agent.ready = False
+        action = agent.start_action(Picky(agent))
+        assert action.has_failed
+
+    def test_requirement_receives_the_agent(self):
+        _model, agent = make_model_and_agent()
+        seen = []
+        agent.start_action(Action(agent, requirements=lambda a: seen.append(a) or True))
+        assert seen == [agent]
+
+
+class TestRequirementsAtStart:
+    def test_failing_requirement_blocks_start(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=lambda a: False)
+
+        agent.start_action(action)
+
+        assert action.state is ActionState.FAILED
+        assert action.has_failed
+        assert action.start_count == 0
+        assert not agent.is_busy
+
+    def test_start_failure_fires_on_fail(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=lambda a: False)
+
+        agent.start_action(action)
+
+        assert action.failed
+        assert not action.completed
+        assert not action.interrupted
+
+    def test_start_failure_leaves_progress_at_zero(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=lambda a: False)
+
+        agent.start_action(action)
+
+        assert action.progress == 0.0
+
+    def test_start_failure_schedules_nothing(self):
+        model, agent = make_model_and_agent()
+        before = len(model._event_list)
+
+        agent.start_action(TrackedAction(agent, requirements=lambda a: False))
+
+        assert len(model._event_list) == before
+
+    def test_all_requirements_must_hold(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=[lambda a: True, lambda a: False])
+
+        agent.start_action(action)
+
+        assert action.has_failed
+
+    def test_action_starts_when_every_requirement_holds(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=[lambda a: True, lambda a: True])
+
+        agent.start_action(action)
+
+        assert action.state is ActionState.ACTIVE
+        assert action.start_count == 1
+
+    def test_failed_action_cannot_be_restarted(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=lambda a: False)
+        agent.start_action(action)
+
+        with pytest.raises(ValueError, match="FAILED"):
+            agent.start_action(action)
+
+    def test_requirements_rechecked_on_resume(self):
+        model, agent = make_model_and_agent()
+        agent.safe = True
+        action = TrackedAction(agent, duration=5.0, requirements=lambda a: a.safe)
+        agent.start_action(action)
+
+        model.run_for(2)
+        agent.cancel_action()
+        agent.safe = False
+
+        agent.start_action(action)
+
+        assert action.state is ActionState.FAILED
+        assert action.resume_count == 0
+        assert action.progress == pytest.approx(0.4)
+
+
+class TestRequirementsAtCompletion:
+    def test_requirement_broken_at_completion_fails(self):
+        model, agent = make_model_and_agent()
+        agent.grass = True
+        action = TrackedAction(agent, duration=3.0, requirements=lambda a: a.grass)
+        agent.start_action(action)
+
+        agent.grass = False
+        model.run_for(4)
+
+        assert action.state is ActionState.FAILED
+        assert action.failed
+        assert not action.completed
+
+    def test_completion_failure_keeps_progress_at_one(self):
+        """The full duration elapsed; only the effect is withheld."""
+        model, agent = make_model_and_agent()
+        agent.grass = True
+        action = TrackedAction(agent, duration=3.0, requirements=lambda a: a.grass)
+        agent.start_action(action)
+
+        agent.grass = False
+        model.run_for(4)
+
+        assert action.progress == 1.0
+
+    def test_completion_failure_releases_the_agent(self):
+        model, agent = make_model_and_agent()
+        agent.grass = True
+        action = TrackedAction(agent, duration=3.0, requirements=lambda a: a.grass)
+        agent.start_action(action)
+
+        agent.grass = False
+        model.run_for(4)
+
+        assert agent.current_action is None
+        assert not agent.is_busy
+
+    def test_requirement_is_not_checked_mid_flight(self):
+        """Broken and repaired between start and completion is not a failure."""
+        model, agent = make_model_and_agent()
+        agent.grass = True
+        action = TrackedAction(agent, duration=5.0, requirements=lambda a: a.grass)
+        agent.start_action(action)
+
+        model.run_for(2)
+        agent.grass = False
+        model.run_for(1)
+        agent.grass = True
+        model.run_for(3)
+
+        assert action.state is ActionState.COMPLETED
+        assert action.completed
+
+    def test_instantaneous_action_still_rechecks(self):
+        """duration=0 completes inside start(), so both checks run."""
+        _model, agent = make_model_and_agent()
+        calls = []
+
+        def once(a):
+            calls.append(a)
+            return len(calls) == 1
+
+        action = TrackedAction(agent, duration=0.0, requirements=once)
+        agent.start_action(action)
+
+        assert action.state is ActionState.FAILED
+        assert action.start_count == 1
+
+
+class TestInterruptForWithRequirements:
+    def test_returns_false_when_the_new_action_fails(self):
+        _model, agent = make_model_and_agent()
+        agent.start_action(TrackedAction(agent, duration=5.0))
+
+        assert (
+            agent.interrupt_for(TrackedAction(agent, requirements=lambda a: False))
+            is False
+        )
+
+    def test_old_action_is_not_rolled_back(self):
+        model, agent = make_model_and_agent()
+        first = TrackedAction(agent, duration=5.0)
+        agent.start_action(first)
+
+        model.run_for(2)
+        agent.interrupt_for(TrackedAction(agent, requirements=lambda a: False))
+
+        assert first.state is ActionState.INTERRUPTED
+        assert agent.current_action is None
+
+    def test_returns_true_when_the_new_action_starts(self):
+        _model, agent = make_model_and_agent()
+        agent.start_action(TrackedAction(agent, duration=5.0))
+
+        assert agent.interrupt_for(TrackedAction(agent, requirements=lambda a: True))
+
+    def test_refused_interruption_leaves_the_new_action_untouched(self):
+        _model, agent = make_model_and_agent()
+        agent.start_action(TrackedAction(agent, duration=5.0, interruptible=False))
+        replacement = TrackedAction(agent, requirements=lambda a: False)
+
+        assert agent.interrupt_for(replacement) is False
+        assert replacement.state is ActionState.PENDING
+        assert not replacement.failed
+
+
 # --- Integration: realistic scenarios ---
 
 
@@ -912,3 +1143,31 @@ class TestRealisticScenarios:
             "resume@7.0",
             "done@13.0",
         ]
+
+    def test_contested_resource_fails_the_slower_agent(self):
+        """Two sheep eat the same patch; the one that finishes second fails."""
+        model = Model()
+        patch = {"grass": True}
+        fast = Agent(model)
+        slow = Agent(model)
+        fast.energy = slow.energy = 0.0
+
+        class Graze(Action):
+            def __init__(self, sheep, duration):
+                super().__init__(
+                    sheep, duration=duration, requirements=lambda a: patch["grass"]
+                )
+
+            def on_complete(self):
+                patch["grass"] = False
+                self.agent.energy += 30
+
+        fast_graze = fast.start_action(Graze(fast, 2.0))
+        slow_graze = slow.start_action(Graze(slow, 4.0))
+
+        model.run_for(5)
+
+        assert fast_graze.state is ActionState.COMPLETED
+        assert fast.energy == 30
+        assert slow_graze.state is ActionState.FAILED
+        assert slow.energy == 0.0
