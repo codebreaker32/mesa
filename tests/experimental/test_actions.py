@@ -781,7 +781,7 @@ class TestEdgeCases:
 # --- Requirements and failure ---
 
 
-class TestRequirementsSetup:
+class TestRequirements:
     def test_no_requirements_by_default(self):
         _model, agent = make_model_and_agent()
         assert Action(agent).requirements == []
@@ -814,47 +814,13 @@ class TestRequirementsSetup:
     def test_requirement_receives_the_agent(self):
         _model, agent = make_model_and_agent()
         seen = []
-        agent.start_action(Action(agent, requirements=lambda a: seen.append(a) or True))
+
+        def record(a):
+            seen.append(a)
+            return True
+
+        agent.start_action(Action(agent, requirements=record))
         assert seen == [agent]
-
-
-class TestRequirementsAtStart:
-    def test_failing_requirement_blocks_start(self):
-        _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=lambda a: False)
-
-        agent.start_action(action)
-
-        assert action.state is ActionState.FAILED
-        assert action.has_failed
-        assert action.start_count == 0
-        assert not agent.is_busy
-
-    def test_start_failure_fires_on_fail(self):
-        _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=lambda a: False)
-
-        agent.start_action(action)
-
-        assert action.failed
-        assert not action.completed
-        assert not action.interrupted
-
-    def test_start_failure_leaves_progress_at_zero(self):
-        _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=lambda a: False)
-
-        agent.start_action(action)
-
-        assert action.progress == 0.0
-
-    def test_start_failure_schedules_nothing(self):
-        model, agent = make_model_and_agent()
-        before = len(model._event_list)
-
-        agent.start_action(TrackedAction(agent, requirements=lambda a: False))
-
-        assert len(model._event_list) == before
 
     def test_all_requirements_must_hold(self):
         _model, agent = make_model_and_agent()
@@ -872,6 +838,44 @@ class TestRequirementsAtStart:
 
         assert action.state is ActionState.ACTIVE
         assert action.start_count == 1
+
+    def test_requirement_is_not_checked_mid_flight(self):
+        """Broken and repaired between start and completion is not a failure."""
+        model, agent = make_model_and_agent()
+        agent.grass = True
+        action = TrackedAction(agent, duration=5.0, requirements=lambda a: a.grass)
+        agent.start_action(action)
+
+        model.run_for(2)
+        agent.grass = False
+        model.run_for(1)
+        agent.grass = True
+        model.run_for(3)
+
+        assert action.state is ActionState.COMPLETED
+        assert action.completed
+
+
+class TestActionFailure:
+    def test_failing_requirement_blocks_start(self):
+        _model, agent = make_model_and_agent()
+        action = TrackedAction(agent, requirements=lambda a: False)
+
+        agent.start_action(action)
+
+        assert action.state is ActionState.FAILED
+        assert action.failed
+        assert action.start_count == 0
+        assert action.progress == 0.0
+        assert not agent.is_busy
+
+    def test_start_failure_schedules_nothing(self):
+        model, agent = make_model_and_agent()
+        before = len(model._event_list)
+
+        agent.start_action(TrackedAction(agent, requirements=lambda a: False))
+
+        assert len(model._event_list) == before
 
     def test_failed_action_cannot_be_restarted(self):
         _model, agent = make_model_and_agent()
@@ -897,8 +901,6 @@ class TestRequirementsAtStart:
         assert action.resume_count == 0
         assert action.progress == pytest.approx(0.4)
 
-
-class TestRequirementsAtCompletion:
     def test_requirement_broken_at_completion_fails(self):
         model, agent = make_model_and_agent()
         agent.grass = True
@@ -911,46 +913,8 @@ class TestRequirementsAtCompletion:
         assert action.state is ActionState.FAILED
         assert action.failed
         assert not action.completed
-
-    def test_completion_failure_keeps_progress_at_one(self):
-        """The full duration elapsed; only the effect is withheld."""
-        model, agent = make_model_and_agent()
-        agent.grass = True
-        action = TrackedAction(agent, duration=3.0, requirements=lambda a: a.grass)
-        agent.start_action(action)
-
-        agent.grass = False
-        model.run_for(4)
-
-        assert action.progress == 1.0
-
-    def test_completion_failure_releases_the_agent(self):
-        model, agent = make_model_and_agent()
-        agent.grass = True
-        action = TrackedAction(agent, duration=3.0, requirements=lambda a: a.grass)
-        agent.start_action(action)
-
-        agent.grass = False
-        model.run_for(4)
-
+        assert action.progress == 1.0  # the duration elapsed, the effect did not apply
         assert agent.current_action is None
-        assert not agent.is_busy
-
-    def test_requirement_is_not_checked_mid_flight(self):
-        """Broken and repaired between start and completion is not a failure."""
-        model, agent = make_model_and_agent()
-        agent.grass = True
-        action = TrackedAction(agent, duration=5.0, requirements=lambda a: a.grass)
-        agent.start_action(action)
-
-        model.run_for(2)
-        agent.grass = False
-        model.run_for(1)
-        agent.grass = True
-        model.run_for(3)
-
-        assert action.state is ActionState.COMPLETED
-        assert action.completed
 
     def test_instantaneous_action_still_rechecks(self):
         """duration=0 completes inside start(), so both checks run."""

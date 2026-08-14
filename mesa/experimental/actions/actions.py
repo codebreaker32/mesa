@@ -268,7 +268,7 @@ class Action:
             )
 
         # Gate entry before duration and priority are resolved, so a failing
-        # action never fires on_start() nor schedules a completion event.
+        # action neither fires on_start() nor schedules a completion event.
         if not self._requirements_met():
             self._fail()
             return self
