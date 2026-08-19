@@ -904,7 +904,9 @@ class TestActionFailure:
     def test_requirement_broken_at_completion_fails(self):
         model, agent = make_model_and_agent()
         agent.grass = True
-        action = TrackedAction(agent, duration=3.0, requirements=lambda a: a.grass)
+        action = TrackedAction(
+            agent, duration=3.0, completion_requirements=lambda a: a.grass
+        )
         agent.start_action(action)
 
         agent.grass = False
@@ -916,20 +918,21 @@ class TestActionFailure:
         assert action.progress == 1.0  # the duration elapsed, the effect did not apply
         assert agent.current_action is None
 
-    def test_instantaneous_action_still_rechecks(self):
-        """duration=0 completes inside start(), so both checks run."""
+    def test_instantaneous_action_checks_both_lists(self):
+        """duration=0 completes inside start(), so both gates run in one call."""
         _model, agent = make_model_and_agent()
-        calls = []
+        agent.ready = True
 
-        def once(a):
-            calls.append(a)
-            return len(calls) == 1
-
-        action = TrackedAction(agent, duration=0.0, requirements=once)
+        action = TrackedAction(
+            agent,
+            duration=0.0,
+            requirements=lambda a: a.ready,
+            completion_requirements=lambda a: False,
+        )
         agent.start_action(action)
 
         assert action.state is ActionState.FAILED
-        assert action.start_count == 1
+        assert action.start_count == 1  # it did start, then failed to land
 
 
 class TestInterruptForWithRequirements:
@@ -1108,30 +1111,67 @@ class TestRealisticScenarios:
             "done@13.0",
         ]
 
-    def test_contested_resource_fails_the_slower_agent(self):
-        """Two sheep eat the same patch; the one that finishes second fails."""
+    def test_contested_resource_is_claimed_at_the_start(self):
+        """The right pattern for a rival resource: claim it, do not re-check it.
+
+        The patch holds one serving. The first sheep claims it in on_start and
+        grazes unimpeded; the second cannot start at all and decides what to do
+        from on_fail, which is where "go elsewhere" or "wait" would live.
+        """
         model = Model()
-        patch = {"grass": True}
-        fast = Agent(model)
-        slow = Agent(model)
-        fast.energy = slow.energy = 0.0
+        patch = {"servings": 1}
+        first, second = Agent(model), Agent(model)
+        first.energy = second.energy = 0.0
+        second.looked_elsewhere = False
 
         class Graze(Action):
-            def __init__(self, sheep, duration):
+            def __init__(self, sheep):
                 super().__init__(
-                    sheep, duration=duration, requirements=lambda a: patch["grass"]
+                    sheep, duration=3.0, requirements=lambda a: patch["servings"] > 0
+                )
+
+            def on_start(self):
+                patch["servings"] -= 1  # claimed, so nobody else can take it
+
+            def on_complete(self):
+                self.agent.energy += 30
+
+            def on_fail(self):
+                self.agent.looked_elsewhere = True
+
+        first_graze = first.start_action(Graze(first))
+        second_graze = second.start_action(Graze(second))
+
+        model.run_for(4)
+
+        assert first_graze.state is ActionState.COMPLETED
+        assert first.energy == 30
+        assert second_graze.state is ActionState.FAILED
+        assert second.looked_elsewhere
+        assert second.energy == 0.0
+
+    def test_completion_requirement_for_a_condition_nobody_can_claim(self):
+        """Market hours cannot be reserved, so the check belongs at completion."""
+        model = Model()
+        trader = Agent(model)
+        trader.filled = False
+        market = {"open": True}
+
+        class Trade(Action):
+            def __init__(self, agent):
+                super().__init__(
+                    agent,
+                    duration=5.0,
+                    completion_requirements=lambda a: market["open"],
                 )
 
             def on_complete(self):
-                patch["grass"] = False
-                self.agent.energy += 30
+                self.agent.filled = True
 
-        fast_graze = fast.start_action(Graze(fast, 2.0))
-        slow_graze = slow.start_action(Graze(slow, 4.0))
+        trade = trader.start_action(Trade(trader))
+        model.run_for(2)
+        market["open"] = False  # closes while the trade is in flight
+        model.run_for(4)
 
-        model.run_for(5)
-
-        assert fast_graze.state is ActionState.COMPLETED
-        assert fast.energy == 30
-        assert slow_graze.state is ActionState.FAILED
-        assert slow.energy == 0.0
+        assert trade.state is ActionState.FAILED
+        assert not trader.filled

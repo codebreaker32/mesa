@@ -43,6 +43,17 @@ class ActionState(IntEnum):
     FAILED = auto()
 
 
+def _as_predicates(
+    spec: Callable[[Agent], bool] | Iterable[Callable[[Agent], bool]] | None,
+) -> list[Callable[[Agent], bool]]:
+    """Normalise a requirement spec into a list the action owns."""
+    if spec is None:
+        return []
+    if callable(spec):
+        return [spec]
+    return list(spec)
+
+
 class Action:
     """Something an agent does over time.
 
@@ -62,8 +73,9 @@ class Action:
         priority: Importance level. Higher = more important. May be a
             callable(agent) -> float, resolved at start time.
         interruptible: Whether higher-priority actions can preempt this.
-        requirements: Predicates the world must satisfy for the action to
-            run. Each is a callable(agent) -> bool.
+        requirements: Predicates that must hold for the action to start.
+        completion_requirements: Predicates that must hold for the effect to
+            apply. Empty by default.
         state: Current lifecycle state (PENDING, ACTIVE, COMPLETED,
             INTERRUPTED, FAILED).
         progress: Time fraction completed, 0.0 to 1.0. Computed live
@@ -86,6 +98,9 @@ class Action:
         requirements: Callable[[Agent], bool]
         | Iterable[Callable[[Agent], bool]]
         | None = None,
+        completion_requirements: Callable[[Agent], bool]
+        | Iterable[Callable[[Agent], bool]]
+        | None = None,
     ) -> None:
         """Initialize an Action.
 
@@ -100,18 +115,19 @@ class Action:
                 a float. Resolved when start() is called.
             interruptible: If False, interrupt() will fail and return False.
             requirements: A single callable(agent) -> bool, or an iterable
-                of them.
+                of them. All must hold for the action to start.
+            completion_requirements: The same, checked instead when the action
+                completes, gating the effect rather than the attempt.
         """
         self.agent = agent
         self.model = agent.model
         self.interruptible = interruptible
         self._name: str | None = name
 
-        if requirements is None:
-            requirements = []
-        elif callable(requirements):
-            requirements = [requirements]
-        self.requirements: list[Callable[[Agent], bool]] = list(requirements)
+        self.requirements: list[Callable[[Agent], bool]] = _as_predicates(requirements)
+        self.completion_requirements: list[Callable[[Agent], bool]] = _as_predicates(
+            completion_requirements
+        )
 
         # Store raw values (may be callables, resolved at start)
         self._duration_spec = duration
@@ -269,7 +285,7 @@ class Action:
 
         # Gate entry before duration and priority are resolved, so a failing
         # action neither fires on_start() nor schedules a completion event.
-        if not self._requirements_met():
+        if not self._requirements_met(self.requirements):
             self._fail()
             return self
 
@@ -379,9 +395,9 @@ class Action:
             self._event.cancel()
             self._event = None
 
-    def _requirements_met(self) -> bool:
-        """Whether every requirement holds right now."""
-        return all(requirement(self.agent) for requirement in self.requirements)
+    def _requirements_met(self, requirements: list[Callable[[Agent], bool]]) -> bool:
+        """Whether every requirement in the given list holds right now."""
+        return all(requirement(self.agent) for requirement in requirements)
 
     def _fail(self) -> None:
         """Move to FAILED, release the agent, and fire on_fail()."""
@@ -402,7 +418,7 @@ class Action:
         self._progress = 1.0
         self._event = None
 
-        if not self._requirements_met():
+        if not self._requirements_met(self.completion_requirements):
             self._fail()
             return
 
