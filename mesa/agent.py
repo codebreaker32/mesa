@@ -263,7 +263,7 @@ class Agent[M: Model]:
         The action must be in PENDING or INTERRUPTED state and the agent
         must not be currently performing another action.
 
-        If one of the action's requirements does not hold, the action moves
+        If one of the action's start requirements does not hold, the action moves
         to FAILED instead of starting and the agent stays idle. Check
         action.has_failed rather than assuming the action is running.
 
@@ -310,7 +310,7 @@ class Agent[M: Model]:
         Returns:
             True if the new action was started. False if the current action
             refused to be interrupted, or if the new action failed its
-            requirements.
+            start requirements.
 
         Notes:
             The two False cases differ in what they leave behind. A refused

@@ -784,20 +784,20 @@ class TestEdgeCases:
 class TestRequirements:
     def test_no_requirements_by_default(self):
         _model, agent = make_model_and_agent()
-        assert Action(agent).requirements == []
+        assert Action(agent).start_requirements == []
 
     def test_single_callable_is_wrapped(self):
         _model, agent = make_model_and_agent()
-        action = Action(agent, requirements=lambda a: True)
-        assert len(action.requirements) == 1
+        action = Action(agent, start_requirements=lambda a: True)
+        assert len(action.start_requirements) == 1
 
     def test_iterable_is_copied(self):
         """The action keeps its own list, not the caller's."""
         _model, agent = make_model_and_agent()
         shared = [lambda a: True]
-        action = Action(agent, requirements=shared)
+        action = Action(agent, start_requirements=shared)
         shared.append(lambda a: False)
-        assert len(action.requirements) == 1
+        assert len(action.start_requirements) == 1
 
     def test_subclass_can_assign_requirements(self):
         _model, agent = make_model_and_agent()
@@ -805,7 +805,7 @@ class TestRequirements:
         class Picky(Action):
             def __init__(self, agent):
                 super().__init__(agent)
-                self.requirements = [lambda a: a.ready]
+                self.start_requirements = [lambda a: a.ready]
 
         agent.ready = False
         action = agent.start_action(Picky(agent))
@@ -819,12 +819,14 @@ class TestRequirements:
             seen.append(a)
             return True
 
-        agent.start_action(Action(agent, requirements=record))
+        agent.start_action(Action(agent, start_requirements=record))
         assert seen == [agent]
 
     def test_all_requirements_must_hold(self):
         _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=[lambda a: True, lambda a: False])
+        action = TrackedAction(
+            agent, start_requirements=[lambda a: True, lambda a: False]
+        )
 
         agent.start_action(action)
 
@@ -832,7 +834,9 @@ class TestRequirements:
 
     def test_action_starts_when_every_requirement_holds(self):
         _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=[lambda a: True, lambda a: True])
+        action = TrackedAction(
+            agent, start_requirements=[lambda a: True, lambda a: True]
+        )
 
         agent.start_action(action)
 
@@ -843,7 +847,9 @@ class TestRequirements:
         """Broken and repaired between start and completion is not a failure."""
         model, agent = make_model_and_agent()
         agent.grass = True
-        action = TrackedAction(agent, duration=5.0, requirements=lambda a: a.grass)
+        action = TrackedAction(
+            agent, duration=5.0, start_requirements=lambda a: a.grass
+        )
         agent.start_action(action)
 
         model.run_for(2)
@@ -859,7 +865,7 @@ class TestRequirements:
 class TestActionFailure:
     def test_failing_requirement_blocks_start(self):
         _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=lambda a: False)
+        action = TrackedAction(agent, start_requirements=lambda a: False)
 
         agent.start_action(action)
 
@@ -873,22 +879,22 @@ class TestActionFailure:
         model, agent = make_model_and_agent()
         before = len(model._event_list)
 
-        agent.start_action(TrackedAction(agent, requirements=lambda a: False))
+        agent.start_action(TrackedAction(agent, start_requirements=lambda a: False))
 
         assert len(model._event_list) == before
 
     def test_failed_action_cannot_be_restarted(self):
         _model, agent = make_model_and_agent()
-        action = TrackedAction(agent, requirements=lambda a: False)
+        action = TrackedAction(agent, start_requirements=lambda a: False)
         agent.start_action(action)
 
         with pytest.raises(ValueError, match="FAILED"):
             agent.start_action(action)
 
-    def test_requirements_rechecked_on_resume(self):
+    def test_start_requirements_rechecked_on_resume(self):
         model, agent = make_model_and_agent()
         agent.safe = True
-        action = TrackedAction(agent, duration=5.0, requirements=lambda a: a.safe)
+        action = TrackedAction(agent, duration=5.0, start_requirements=lambda a: a.safe)
         agent.start_action(action)
 
         model.run_for(2)
@@ -926,7 +932,7 @@ class TestActionFailure:
         action = TrackedAction(
             agent,
             duration=0.0,
-            requirements=lambda a: a.ready,
+            start_requirements=lambda a: a.ready,
             completion_requirements=lambda a: False,
         )
         agent.start_action(action)
@@ -941,7 +947,9 @@ class TestInterruptForWithRequirements:
         agent.start_action(TrackedAction(agent, duration=5.0))
 
         assert (
-            agent.interrupt_for(TrackedAction(agent, requirements=lambda a: False))
+            agent.interrupt_for(
+                TrackedAction(agent, start_requirements=lambda a: False)
+            )
             is False
         )
 
@@ -951,7 +959,7 @@ class TestInterruptForWithRequirements:
         agent.start_action(first)
 
         model.run_for(2)
-        agent.interrupt_for(TrackedAction(agent, requirements=lambda a: False))
+        agent.interrupt_for(TrackedAction(agent, start_requirements=lambda a: False))
 
         assert first.state is ActionState.INTERRUPTED
         assert agent.current_action is None
@@ -960,12 +968,14 @@ class TestInterruptForWithRequirements:
         _model, agent = make_model_and_agent()
         agent.start_action(TrackedAction(agent, duration=5.0))
 
-        assert agent.interrupt_for(TrackedAction(agent, requirements=lambda a: True))
+        assert agent.interrupt_for(
+            TrackedAction(agent, start_requirements=lambda a: True)
+        )
 
     def test_refused_interruption_leaves_the_new_action_untouched(self):
         _model, agent = make_model_and_agent()
         agent.start_action(TrackedAction(agent, duration=5.0, interruptible=False))
-        replacement = TrackedAction(agent, requirements=lambda a: False)
+        replacement = TrackedAction(agent, start_requirements=lambda a: False)
 
         assert agent.interrupt_for(replacement) is False
         assert replacement.state is ActionState.PENDING
@@ -1127,7 +1137,9 @@ class TestRealisticScenarios:
         class Graze(Action):
             def __init__(self, sheep):
                 super().__init__(
-                    sheep, duration=3.0, requirements=lambda a: patch["servings"] > 0
+                    sheep,
+                    duration=3.0,
+                    start_requirements=lambda a: patch["servings"] > 0,
                 )
 
             def on_start(self):

@@ -73,7 +73,7 @@ class Action:
         priority: Importance level. Higher = more important. May be a
             callable(agent) -> float, resolved at start time.
         interruptible: Whether higher-priority actions can preempt this.
-        requirements: Predicates that must hold for the action to start.
+        start_requirements: Predicates that must hold for the action to start.
         completion_requirements: Predicates that must hold for the effect to
             apply. Empty by default.
         state: Current lifecycle state (PENDING, ACTIVE, COMPLETED,
@@ -95,7 +95,7 @@ class Action:
         name: str | None = None,
         priority: float | Callable[[Agent], float] = 0.0,
         interruptible: bool = True,
-        requirements: Callable[[Agent], bool]
+        start_requirements: Callable[[Agent], bool]
         | Iterable[Callable[[Agent], bool]]
         | None = None,
         completion_requirements: Callable[[Agent], bool]
@@ -114,8 +114,8 @@ class Action:
                 a float or a callable that receives the agent and returns
                 a float. Resolved when start() is called.
             interruptible: If False, interrupt() will fail and return False.
-            requirements: A single callable(agent) -> bool, or an iterable
-                of them. All must hold for the action to start.
+            start_requirements: A single callable(agent) -> bool, or an
+                iterable of them. All must hold for the action to start.
             completion_requirements: The same, checked instead when the action
                 completes, gating the effect rather than the attempt.
         """
@@ -124,7 +124,9 @@ class Action:
         self.interruptible = interruptible
         self._name: str | None = name
 
-        self.requirements: list[Callable[[Agent], bool]] = _as_predicates(requirements)
+        self.start_requirements: list[Callable[[Agent], bool]] = _as_predicates(
+            start_requirements
+        )
         self.completion_requirements: list[Callable[[Agent], bool]] = _as_predicates(
             completion_requirements
         )
@@ -285,7 +287,7 @@ class Action:
 
         # Gate entry before duration and priority are resolved, so a failing
         # action neither fires on_start() nor schedules a completion event.
-        if not self._requirements_met(self.requirements):
+        if not self._requirements_met(self.start_requirements):
             self._fail()
             return self
 
