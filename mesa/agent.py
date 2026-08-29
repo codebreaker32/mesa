@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from mesa.experimental.actions import Action
     from mesa.model import Model
 
-from mesa.agentset import AgentSet
+from mesa.agentset import AgentSet, _resolve_per_agent_values
 
 
 class Agent[M: Model]:
@@ -149,22 +149,16 @@ class Agent[M: Model]:
                 agents.append(cls(model))
             return AgentSet(agents, random=model.random)
 
-        # Prepare positional argument iterators
-        arg_iters = []
-        for arg in args:
-            if isinstance(arg, (list, np.ndarray, tuple, pd.Series)) and len(arg) == n:
-                arg_iters.append(arg)
-            else:
-                arg_iters.append(itertools.repeat(arg, n))
+        # Prepare positional argument iterators. A sequence of length n is
+        # assigned per agent; anything else is broadcast (strict=False keeps the
+        # existing behavior where a mismatched-length sequence is broadcast whole).
+        arg_iters = [_resolve_per_agent_values(arg, n, strict=False) for arg in args]
 
         # Prepare keyword argument iterators
         kw_keys = list(kwargs.keys())
-        kw_val_iters = []
-        for v in kwargs.values():
-            if isinstance(v, (list, np.ndarray, tuple, pd.Series)) and len(v) == n:
-                kw_val_iters.append(v)
-            else:
-                kw_val_iters.append(itertools.repeat(v, n))
+        kw_val_iters = [
+            _resolve_per_agent_values(v, n, strict=False) for v in kwargs.values()
+        ]
 
         # If arg_iters is empty, zip(*[]) returns nothing, so we use repeat(())
         pos_iter = zip(*arg_iters) if arg_iters else itertools.repeat(())

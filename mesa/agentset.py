@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import itertools
 import operator
 import warnings
 import weakref
@@ -16,6 +17,9 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Iterator, MutableSet, Sequence
 from random import Random
 from typing import TYPE_CHECKING, Any, Literal, overload
+
+import numpy as np
+import pandas as pd
 
 if TYPE_CHECKING:
     from mesa.agent import Agent
@@ -63,6 +67,38 @@ def _resolve_weights(
         raise ValueError("Sum of weights must be strictly positive.")
 
     return w
+
+
+def _resolve_per_agent_values(value: Any, n: int, *, strict: bool = True) -> Iterable:
+    """Resolve ``value`` into an iterable of ``n`` per-agent values.
+
+    A ``list``, ``tuple``, ``numpy.ndarray`` or ``pandas.Series`` of length ``n``
+    is treated as one value per agent. Any other value (a scalar, a string, or a
+    non-sequence) is broadcast to all ``n`` agents.
+
+    Args:
+        value: The value(s) to assign, either one per agent or broadcast.
+        n: The number of agents to produce values for.
+        strict: If True (the default), a sequence whose length is not ``n`` raises
+            ValueError. If False, such a sequence is broadcast to every agent (the
+            whole sequence becomes each agent's value).
+
+    Returns:
+        An iterable yielding exactly ``n`` values.
+
+    Raises:
+        ValueError: If ``strict`` and ``value`` is a sequence whose length is
+            not ``n``.
+    """
+    if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+        if len(value) == n:
+            return value
+        if strict:
+            raise ValueError(
+                f"sequence of length {len(value)} does not match the number "
+                f"of agents ({n})"
+            )
+    return itertools.repeat(value, n)
 
 
 class AbstractAgentSet[A: Agent](ABC, MutableSet[A]):
@@ -335,17 +371,40 @@ class AbstractAgentSet[A: Agent](ABC, MutableSet[A]):
             )
 
     def set(self, attr_name: str, value: Any) -> AgentSet[A]:
-        """Set a specified attribute to a given value for all agents in the AgentSet.
+        """Set a specified attribute for the agents in the AgentSet.
+
+        The behavior is derived from ``value`` (the same value-based rule pandas
+        uses for column assignment):
+
+        - A ``list``, ``tuple``, ``numpy.ndarray`` or ``pandas.Series`` is treated
+          as one value per agent and is assigned element-wise, in iteration order
+          (the same order ``get`` uses), so a ``get -> transform -> set``
+          round-trip stays consistent. It must have the same length as the
+          AgentSet; a length mismatch raises ``ValueError``.
+        - Any other value (a scalar, a string, or any non-sequence) is broadcast:
+          every agent receives the same value.
 
         Args:
             attr_name (str): The name of the attribute to set.
-            value (Any): The value to set the attribute to.
+            value (Any): The value(s) to assign. See above for how the shape of
+                ``value`` selects element-wise vs broadcast assignment.
 
         Returns:
             AgentSet: The AgentSet instance itself, after setting the attribute.
+
+        Raises:
+            ValueError: If ``value`` is a sequence whose length does not match the
+                number of agents in the AgentSet.
+
+        Notes:
+            A per-agent sequence is recognized by its type (list, tuple, ndarray,
+            Series). To assign a single sequence value to every agent, broadcast
+            it explicitly, e.g. ``[shared_list] * len(agentset)``.
         """
-        for agent in self:
-            setattr(agent, attr_name, value)
+        for agent, agent_value in zip(
+            self, _resolve_per_agent_values(value, len(self))
+        ):
+            setattr(agent, attr_name, agent_value)
         return self
 
     def to_list(self) -> list[A]:
