@@ -20,7 +20,10 @@ if TYPE_CHECKING:
     from mesa.time import Event
 
 from mesa.agentset import AgentSet, _resolve_per_agent_values
+from mesa.mesa_logging import create_module_logger
 from mesa.time import Priority
+
+_mesa_logger = create_module_logger()
 
 
 class Agent[M: Model]:
@@ -393,7 +396,8 @@ class Agent[M: Model]:
         Notes:
             At most one wake fires per agent per model time, so a
             zero-duration action started here cannot re-trigger the hook
-            in the same instant. The wake is skipped when the agent is
+            in the same instant; a wake dropped by this guard is logged
+            at DEBUG level. The wake is skipped when the agent is
             busy again by the time the event runs -- interrupt_for()
             refills the slot synchronously, so no idle gap ever existed.
             If several actions end before the wake runs, they coalesce
@@ -406,12 +410,17 @@ class Agent[M: Model]:
         Called by Action._release_agent whenever this agent's slot is
         cleared. If a wake is already pending, or one already fired at
         the current model time, no second event is queued -- only
-        ``previous`` is brought up to date.
+        ``previous`` is brought up to date. A wake dropped by the
+        once-per-time guard is logged at DEBUG level.
         """
         self._wake_previous = previous
         if self._wake_event is not None:
             return
         if self._last_wake_time == self.model.time:
+            _mesa_logger.debug(
+                f"suppressed repeat on_idle wake for agent {self.unique_id} "
+                f"at time {self.model.time} (ending action: {previous!r})"
+            )
             return
         self._wake_event = self.model.schedule_event(
             self._fire_wake, after=0.0, priority=Priority.LOW

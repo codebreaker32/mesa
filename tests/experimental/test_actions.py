@@ -1,6 +1,8 @@
 """Tests for mesa.experimental.actions."""
 
 # ruff: noqa: D101, D102, D103, D107
+import logging
+
 import pytest
 
 from mesa import Agent, Model
@@ -1427,6 +1429,21 @@ class TestOnIdle:
         model.run_for(1)
 
         assert agent.idle_calls == 1
+
+    def test_suppressed_wake_is_logged_at_debug(self, caplog):
+        model = Model()
+
+        class Chain(Agent):
+            def on_idle(self, previous):
+                self.start_action(Action(self, duration=0.0))
+
+        agent = Chain(model)
+        agent.start_action(Action(agent, duration=0.0))
+        with caplog.at_level(logging.DEBUG, logger="MESA.mesa.agent"):
+            model.run_for(1)
+
+        assert "suppressed repeat on_idle wake" in caplog.text
+        assert f"agent {agent.unique_id}" in caplog.text
 
     def test_agent_chains_actions_across_time(self):
         model = Model()
