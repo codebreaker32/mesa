@@ -1,15 +1,10 @@
 # Experimental
 This namespace contains experimental features. These are under development, and their API is not necessarily stable.
 
-## Continuous Space
+## Actions
 
 ```{eval-rst}
-.. automodule:: experimental.continuous_space.continuous_space
-   :members:
-```
-
-```{eval-rst}
-.. automodule:: experimental.continuous_space.continuous_space_agents
+.. automodule:: experimental.actions.actions
    :members:
 ```
 

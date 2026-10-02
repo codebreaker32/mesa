@@ -15,13 +15,14 @@ If you want to learn how to build agent-based models step by step using Mesa, fo
 - [AgentSet](tutorials/1_agentset): Learn how to more effectively manage agents with Mesa's AgentSet.
 - [Agent Activation](tutorials/2_agent_activation): Learn different ways to activate agents using `do`, `shuffle_do`, and `map` — covering random, sequential, simultaneous, staged, type-based, and conditional activation patterns.
 - [Event Scheduling](tutorials/3_event_scheduling): Learn how to schedule events and manage time in your Mesa model.
-- [Adding Space](tutorials/4_adding_space): Learn how to add space to your Mesa model and understand Mesa's space architecture.
-- [Collecting Data](tutorials/5_collecting_data): Learn how to collect model level and agent level data with Mesa's DataCollector.
-- [Basic Visualization](tutorials/6_visualization_basic): Learn how to build an interactive dashboard with Mesa's visualization module.
-- [Dynamic Agent Visualization](tutorials/7_visualization_dynamic_agents): Learn how to dynamically represent your agents in your interactive dashboard.
-- [Visualization using SpaceRenderer](tutorials/8_visualization_rendering_with_space_renderer): Learn how to use SpaceRenderer to its full extent to enhance your visualizations.
-- [Property Layer Visualization](tutorials/9_visualization_property_layer_visualization): Learn how to visualize property layers in Mesa.
-- [Custom Visualization Components](tutorials/10_visualization_custom): Learn how to add custom visual components to your interactive dashboard.
+- [Agent Actions](tutorials/4_agent_actions): Learn how to give agents timed, interruptible actions with the experimental actions API, and how an agent decides what to do next.
+- [Adding Space](tutorials/5_adding_space): Learn how to add space to your Mesa model and understand Mesa's space architecture.
+- [Collecting Data](tutorials/6_collecting_data): Learn how to collect model level and agent level data with Mesa's DataCollector.
+- [Basic Visualization](tutorials/7_visualization_basic): Learn how to build an interactive dashboard with Mesa's visualization module.
+- [Dynamic Agent Visualization](tutorials/8_visualization_dynamic_agents): Learn how to dynamically represent your agents in your interactive dashboard.
+- [Visualization using SpaceRenderer](tutorials/9_visualization_rendering_with_space_renderer): Learn how to use SpaceRenderer to its full extent to enhance your visualizations.
+- [Property Layer Visualization](tutorials/10_visualization_property_layer_visualization): Learn how to visualize property layers in Mesa.
+- [Custom Visualization Components](tutorials/11_visualization_custom): Learn how to add custom visual components to your interactive dashboard.
 
 ## Examples
 Mesa ships with a collection of example models. These are classic ABMs, so if you are familiar with ABMs and want to get a quick sense of how MESA works, these examples are great place to start. You can find them [here](examples).

@@ -318,13 +318,14 @@ Creating Your First Model <tutorials/0_first_model>
 AgentSet <tutorials/1_agentset>
 Agent Activation <tutorials/2_agent_activation>
 Event Scheduling <tutorials/3_event_scheduling>
-Adding Space <tutorials/4_adding_space>
-Collecting Data <tutorials/5_collecting_data>
-Basic Visualization <tutorials/6_visualization_basic>
-Dynamic Agent Visualization <tutorials/7_visualization_dynamic_agents>
-Visualisation using SpaceRenderer <tutorials/8_visualization_rendering_with_space_renderer>
-Property Layer Visualization <tutorials/9_visualization_property_layer_visualization>
-Custom Visualization Components <tutorials/10_visualization_custom>
+Agent Actions <tutorials/4_agent_actions>
+Adding Space <tutorials/5_adding_space>
+Collecting Data <tutorials/6_collecting_data>
+Basic Visualization <tutorials/7_visualization_basic>
+Dynamic Agent Visualization <tutorials/8_visualization_dynamic_agents>
+Visualisation using SpaceRenderer <tutorials/9_visualization_rendering_with_space_renderer>
+Property Layer Visualization <tutorials/10_visualization_property_layer_visualization>
+Custom Visualization Components <tutorials/11_visualization_custom>
 Best Practices <best-practices>
 
 
