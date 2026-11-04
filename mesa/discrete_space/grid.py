@@ -37,19 +37,21 @@ def pickle_gridcell(obj):
 
 
 def unpickle_gridcell(parent, fields):
-    """Helper function for unpickling GridCell instances."""
-    # since the class is dynamically created, we recreate it here
-    cell_klass = type(
-        "GridCell",
-        (parent,),
-        {"property_layers": set(), "__slots__": ()},
-    )
-    instance = cell_klass(
+    """Helper function for unpickling GridCell instances.
+
+    The cell is restored as an instance of ``parent``, the base cell class of the
+    grid. ``Grid.__setstate__`` then moves all restored cells to a single, freshly
+    created GridCell class and re-attaches the property_layer accessors to it.
+    """
+    instance = parent(
         (0, 0)
     )  # we use a default coordinate and overwrite it with the correct value next
 
-    # __gestate__ returns a tuple with dict and slots, but slots contains the dict so we can just use the
-    # second item only
+    # __getstate__ returns a (dict, slots) tuple. The slots part holds Cell's own
+    # attributes; the dict part is only non-empty for a user-supplied cell class
+    # without __slots__, whose instance attributes would otherwise be lost.
+    if fields[0]:
+        instance.__dict__.update(fields[0])
     for k, v in fields[1].items():
         setattr(instance, k, v)
 
@@ -110,6 +112,9 @@ class Grid(DiscreteSpace[T]):
             {"property_layers": set(), "__slots__": ()},
         )
         self.property_layers: dict[str, np.ndarray] = {}
+        # Track which property layers are read-only so the constraint survives
+        # pickling and deepcopy (see __getstate__/__setstate__).
+        self._read_only_layers: set[str] = set()
 
         # we register the pickle_gridcell helper function
         copyreg.pickle(self.cell_klass, pickle_gridcell)
@@ -163,38 +168,49 @@ class Grid(DiscreteSpace[T]):
         self._attach_property_layer(name, array, read_only=read_only)
 
     def remove_property_layer(self, name: str) -> None:
-        """Remove a property_layer.
+        """Remove a property_layer and its grid and cell attributes.
 
         Args:
             name: property_layer name.
+
+        Raises:
+            ValueError: If attempting to remove the built-in 'empty' property layer.
+            KeyError: If no property layer with the given name exists.
         """
+        if name == "empty":
+            raise ValueError("Cannot remove the built-in 'empty' property layer.")
         if name not in self.property_layers:
             raise KeyError(f"No property_layer named '{name}'.")
         del self.property_layers[name]
+        delattr(self, name)
         delattr(self.cell_klass, name)
         self.cell_klass.property_layers.discard(name)
+        self._read_only_layers.discard(name)
 
     def _attach_property_layer(
         self, name: str, array: np.ndarray, read_only: bool = False
     ) -> None:
-        if name in type(self).__dict__ or any(
-            name in c.__dict__ for c in type(self).__mro__
-        ):
+        if name in self.property_layers:
+            raise ValueError(f"property_layer '{name}' already exists.")
+
+        if name in self.__dict__ or any(name in c.__dict__ for c in type(self).__mro__):
             raise ValueError(
                 f"property_layer '{name}' conflicts with an existing Grid attribute."
             )
 
-        if name in self.property_layers:
-            raise ValueError(f"property_layer '{name}' already exists.")
-
-        slots = set(
-            chain.from_iterable(
-                getattr(cls, "__slots__", []) for cls in self.cell_klass.__mro__
-            )
+        # Attaching a layer installs an accessor on cell_klass via setattr, so any
+        # name already defined on that class would be silently shadowed. Walking
+        # __mro__ __dict__ covers @property accessors, methods, plain class vars,
+        # and __slots__ members alike (a slot is a member_descriptor living in the
+        # class __dict__). "empty" is exempt: Grid.__init__ itself installs it as
+        # a property layer backing Cell.empty.
+        cell_attrs = set(
+            chain.from_iterable(c.__dict__ for c in self.cell_klass.__mro__)
         )
-        if name in slots:
+        if name != "empty" and name in cell_attrs:
             raise ValueError(
-                f"property_layer name '{name}' clashes with existing slot '{name}'."
+                f"property_layer '{name}' conflicts with an existing "
+                f"{self.cell_klass.__name__} attribute."
             )
         self.property_layers[name] = array
         setattr(self, name, array)
@@ -212,6 +228,8 @@ class Grid(DiscreteSpace[T]):
         )
         setattr(self.cell_klass, name, accessor)
         self.cell_klass.property_layers.add(name)
+        if read_only:
+            self._read_only_layers.add(name)
 
     def get_neighborhood_mask(
         self, coordinate, include_center: bool = True, radius: int = 1
@@ -299,15 +317,16 @@ class Grid(DiscreteSpace[T]):
                 if cell.is_empty:
                     return cell
 
-        empty_coords = np.argwhere(self.property_layers["empty"])
+        empty_layer = self.property_layers["empty"]
+        empty_indices = np.flatnonzero(empty_layer)
         try:
-            random_coord = self.random.choice(empty_coords)
+            random_index = self.random.choice(empty_indices)
         except IndexError as e:
             raise ValueError(
                 "Grid is completely full. No empty cells available. "
                 "Cannot select a random empty cell."
             ) from e
-        return self._cells[tuple(random_coord)]
+        return self._cells[np.unravel_index(random_index, empty_layer.shape)]
 
     @property
     def cells_with_capacity(self) -> CellCollection[T]:
@@ -318,7 +337,7 @@ class Grid(DiscreteSpace[T]):
         This is meaningfully different from :attr:`~DiscreteSpace.empties`:
         ``empties`` only includes cells with **zero** agents. If a cell has
         ``capacity=5`` and currently holds 3 agents it is **not** empty, but it
-        **is** still available. ``available_cells`` is therefore the correct
+        **is** still available. ``cells_with_capacity`` is therefore the correct
         API for models where agents share cells up to a finite limit.
 
         For cells with ``capacity=None`` (unlimited), every cell is always
@@ -394,25 +413,53 @@ class Grid(DiscreteSpace[T]):
 
     def __getstate__(self) -> dict[str, Any]:
         """Custom __getstate__ for handling dynamic GridCell class and property_layer accessors."""
-        state = super().__getstate__()
-        state = {k: v for k, v in state.items() if k != "cell_klass"}
+        state = dict(super().__getstate__())
+        # GridCell is created dynamically, so it cannot be pickled by reference. Store
+        # its base class instead; __setstate__ recreates GridCell from it.
+        state["cell_klass"] = self.cell_klass.__bases__[0]
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
-        """Restore state and re-attach property_layer accessors to the cell class."""
+        """Restore state and re-attach property_layer accessors to the cell class.
+
+        ``unpickle_gridcell`` restores every cell as an instance of the base cell
+        class, so a single GridCell class is recreated here, exactly as in
+        ``__init__``, and all cells are moved to it before the accessors are
+        attached. Read-only layers (tracked in ``_read_only_layers``) are restored
+        without a setter so the read-only constraint survives the round trip.
+        """
         super().__setstate__(state)
+        base_klass = self.cell_klass
+        self.cell_klass = type(
+            "GridCell",
+            (base_klass,),
+            {"property_layers": set(), "__slots__": ()},
+        )
+        copyreg.pickle(self.cell_klass, pickle_gridcell)
+        for cell in self._cells.values():
+            # cells of other classes added at runtime are left untouched
+            if type(cell) is base_klass:
+                cell.__class__ = self.cell_klass
+
+        # Older pickles may predate _read_only_layers; default to no read-only layers.
+        read_only_layers = getattr(self, "_read_only_layers", set())
+        self._read_only_layers = read_only_layers
         for name, array in self.property_layers.items():
-            setattr(
-                self.cell_klass,
-                name,
-                property(
+            if name in read_only_layers:
+                accessor = property(
+                    lambda self_cell, a=array: a[self_cell.coordinate],
+                    doc=f"property_layer '{name}'",
+                )
+            else:
+                accessor = property(
                     lambda self_cell, a=array: a[self_cell.coordinate],
                     lambda self_cell, v, a=array: a.__setitem__(
                         self_cell.coordinate, v
                     ),
                     doc=f"property_layer '{name}'",
-                ),
-            )
+                )
+            setattr(self.cell_klass, name, accessor)
+            self.cell_klass.property_layers.add(name)
 
 
 class OrthogonalMooreGrid(Grid[T]):
@@ -488,6 +535,9 @@ class OrthogonalVonNeumannGrid(Grid[T]):
 class HexGrid(Grid[T]):
     """A Grid with hexagonal tilling of the space.
 
+    Functions according to even-r rules.
+    See https://www.redblobgames.com/grids/hexagons/#neighbors-offset for more.
+
     Note:
         When torus=True, both width and height must be even.
 
@@ -559,12 +609,12 @@ class HexGrid(Grid[T]):
 
     def _connect_cells_2d(self) -> None:
         # fmt: off
-        even_offsets = [
+        odd_offsets = [
                         (-1, -1), (0, -1),
                     ( -1, 0),        ( 1, 0),
                         ( -1, 1), (0, 1),
                 ]
-        odd_offsets = [
+        even_offsets = [
                         (0, -1), (1, -1),
                     ( -1, 0),       ( 1, 0),
                         ( 0, 1), ( 1, 1),
@@ -573,7 +623,7 @@ class HexGrid(Grid[T]):
 
         for cell in self.all_cells:
             i = cell.coordinate[1]
-            offsets = even_offsets if i % 2 else odd_offsets
+            offsets = even_offsets if i % 2 == 0 else odd_offsets
             self._connect_single_cell_2d(cell, offsets=offsets)
 
     def _connect_cells_nd(self) -> None:

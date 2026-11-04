@@ -1,4 +1,4 @@
-"""Tests for mesa.experimental.scenarios."""
+"""Tests for the Scenario class and the rescale_samples utility."""
 
 import pickle
 
@@ -7,14 +7,12 @@ import pytest
 import scipy.stats.qmc as qmc
 
 from mesa import Agent, Model
-from mesa.experimental.scenarios import Scenario
-from mesa.experimental.scenarios.scenario import rescale_samples
+from mesa.experimental.scenarios import Scenario, rescale_samples
+from mesa.experimental.scenarios.scenario import PARENT_REPLICATION_ID
 
 
 def test_scenario():
-    """Test Scenario and ModelWithScenario class."""
-    Scenario._reset_counter()
-
+    """Test Scenario class."""
     scenario = Scenario(a=1, b=2, c=3, rng=42)
     assert scenario.scenario_id == 0
     assert scenario.a == 1
@@ -24,7 +22,7 @@ def test_scenario():
     d = scenario.to_dict()
     assert d["a"] == 1
     assert d["scenario_id"] == 0
-    assert d["replication_id"] is None
+    assert d["replication_id"] is PARENT_REPLICATION_ID
 
     with pytest.raises(TypeError):
         scenario.c = 4
@@ -48,6 +46,20 @@ def test_scenario():
     model = Model(scenario=scenario)
     assert model.rng is gen
 
+    # test we can correctly rebuild seed sequence from the to_dict information.
+    scenario = Scenario(rng=42, scenario_id=3)
+    d = scenario.to_dict()
+
+    rebuilt = np.random.SeedSequence(
+        d["seed_sequence_entropy"], spawn_key=d["seed_sequence_spawn_key"]
+    )
+    bg_cls = getattr(np.random, d["generator_class"])
+    rebuilt_rng = np.random.Generator(bg_cls(rebuilt))
+
+    assert [scenario.rng.random() for _ in range(5)] == [
+        rebuilt_rng.random() for _ in range(5)
+    ]
+
 
 def test_scenario_serialization():
     """Test that scenarios can be pickled/unpickled."""
@@ -58,7 +70,8 @@ def test_scenario_serialization():
     assert unpickled.a == scenario.a
     assert unpickled.scenario_id == scenario.scenario_id
     assert unpickled.replication_id == scenario.replication_id
-    assert unpickled.initial_rng_state == scenario.initial_rng_state
+    assert unpickled.seed_sequence.entropy == scenario.seed_sequence.entropy
+    assert unpickled._generator_class == scenario._generator_class
 
     scenario = Scenario(a=1, rng=np.random.default_rng(42))
 
@@ -66,6 +79,22 @@ def test_scenario_serialization():
     unpickled = pickle.loads(pickled)  # noqa: S301
     assert unpickled.a == scenario.a
     assert unpickled.scenario_id == scenario.scenario_id
+
+    # check that drawing random numbers also behaves correctly.
+    scenario = Scenario(a=1, rng=42)
+    restored = pickle.loads(pickle.dumps(scenario))  # noqa: S301
+    assert [scenario.rng.random() for _ in range(5)] == [
+        restored.rng.random() for _ in range(5)
+    ]
+
+    # test the not implemented error for a non numpy BitGenerator
+    scenario = Scenario(rng=42)
+    state = list(scenario.__getstate__())
+    state[-1] = "NotARealBitGenerator"  # the _generator_class slot
+
+    restored = Scenario.__new__(Scenario)
+    with pytest.raises(NotImplementedError):
+        restored.__setstate__(tuple(state))
 
 
 def test_agent_scenario_property():
@@ -145,7 +174,7 @@ def test_scenario_frozen():
 
 
 def test_scenario_spawn_replications():
-    """Test that replicate() produces correctly seeded copies."""
+    """Test that spawn_replications() produces correctly seeded copies."""
 
     class MyScenario(Scenario):
         density: float = 0.8
@@ -159,14 +188,18 @@ def test_scenario_spawn_replications():
         assert r.scenario_id == 3
         assert r.density == 0.8
         assert (
-            r.initial_rng_state != base.initial_rng_state
+            r.seed_sequence.spawn_key != base.seed_sequence.spawn_key
         )  # derived seed, not the same
+
+    # each replication also has a distinct spawn_key — this is what guarantees
+    # independent streams
+    assert len({tuple(r.seed_sequence.spawn_key) for r in replicas}) == len(replicas)
 
     # Seeds are deterministic: same base produces same replicas
     base2 = MyScenario(rng=42, scenario_id=3)
     replicas2 = base2.spawn_replications(5)
     for r1, r2 in zip(replicas, replicas2):
-        assert r1.initial_rng_state == r2.initial_rng_state, (
+        assert r1.seed_sequence.spawn_key == r2.seed_sequence.spawn_key, (
             "generators are not the same"
         )
 
@@ -180,9 +213,30 @@ def test_scenario_spawn_replications():
     replicas_ss1 = base_1.spawn_replications(3)
     replicas_ss2 = base_2.spawn_replications(3)
     for r1, r2 in zip(replicas_ss1, replicas_ss2):
-        assert r1.initial_rng_state == r2.initial_rng_state, (
+        assert r1.seed_sequence.spawn_key == r2.seed_sequence.spawn_key, (
             "generators are not the same"
         )
+
+    # Test that a spawned replication behaves correctly after a pickle round trip.
+    base = Scenario(rng=42, scenario_id=3)
+    child = base.spawn_replications(4)[2]
+    restored = pickle.loads(pickle.dumps(child))  # noqa: S301
+
+    assert restored.seed_sequence.spawn_key == child.seed_sequence.spawn_key
+    assert [child.rng.random() for _ in range(5)] == [
+        restored.rng.random() for _ in range(5)
+    ]
+
+    # test that stdlib seeds are different also across spawned replications.
+    base = Scenario(rng=42, scenario_id=3)
+    reps = base.spawn_replications(4)
+    seeds = [r._stdlib_seed for r in reps]
+    assert len(set(seeds)) == len(seeds)  # all distinct
+
+    # test that stdlib seed survives a pickling round trip
+    child = Scenario(rng=42, scenario_id=3).spawn_replications(4)[1]
+    restored = pickle.loads(pickle.dumps(child))  # noqa: S301
+    assert restored._stdlib_seed == child._stdlib_seed
 
 
 def test_scenario_from():

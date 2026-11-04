@@ -77,8 +77,10 @@ class BasicMovement:
 class FixedCell(HasCell):
     """Mixin for agents that are fixed to a cell.
 
-    Once assigned to a cell, the agent cannot be moved to a different cell.
-    The assignment is atomic: if cell.add_agent() raises (e.g. capacity
+    The cell can be assigned once, after the agent is created. Until then the
+    agent is unplaced and its cell is None; assigning None while unplaced does
+    nothing. Once assigned to a cell, the agent cannot be moved to a different
+    cell. The assignment is atomic: if cell.add_agent() raises (e.g. capacity
     reached), the agent's _mesa_cell reference is left unchanged.
     """
 
@@ -91,6 +93,8 @@ class FixedCell(HasCell):
     def cell(self, cell: Cell | None) -> None:
         if self._mesa_cell is not None:
             raise ValueError("Cannot move agent in FixedCell")
+        if cell is None:
+            return  # still unplaced, nothing to do
         cell.add_agent(self)
         self._mesa_cell = cell
 
@@ -112,7 +116,19 @@ class FixedAgent(Agent, FixedCell):
     """A patch in a 2D grid."""
 
     def remove(self):
-        """Remove the agent from the model."""
+        """Remove the agent from the model and from its cell.
+
+        Raises:
+            ValueError: If the agent is not in a cell. An unplaced fixed agent is
+                treated as an error. The check runs before anything is removed, so
+                the agent is left untouched.
+        """
+        if self.cell is None:
+            raise ValueError(
+                f"Cannot remove {type(self).__name__} {self.unique_id}: it is not "
+                "in a cell. A fixed agent has to be placed in a cell before it "
+                "can be removed."
+            )
         super().remove()
 
         self.cell.remove_agent(self)
@@ -149,4 +165,78 @@ class Grid2DMovingAgent(CellAgent):
 
         move_vector = self.DIRECTION_MAP[direction]
         for _ in range(distance):
+            self.move_relative(move_vector)
+
+
+class HexGridMovingAgent(CellAgent):
+    """A specialized agent for moving on a HexGrid (Even-R / Pointy-Topped).
+
+    This agent correctly handles the alternating connectivity of the HexGrid
+    defined in mesa.discrete_space.grid, where the Row Index (y) determines parity.
+
+    """
+
+    # For EVEN columns
+    DIRECTION_MAP_EVEN: ClassVar[dict[str, tuple[int, int]]] = {
+        "nw": (0, -1),
+        "northwest": (0, -1),
+        "ne": (1, -1),
+        "northeast": (1, -1),
+        "sw": (0, 1),
+        "southwest": (0, 1),
+        "se": (1, 1),
+        "southeast": (1, 1),
+        "w": (-1, 0),
+        "west": (-1, 0),
+        "e": (1, 0),
+        "east": (1, 0),
+        # Vertical aliases
+        "n": (0, -1),
+        "north": (0, -1),
+        "s": (0, 1),
+        "south": (0, 1),
+    }
+
+    # For ODD columns
+    DIRECTION_MAP_ODD: ClassVar[dict[str, tuple[int, int]]] = {
+        "nw": (-1, -1),
+        "northwest": (-1, -1),
+        "ne": (0, -1),
+        "northeast": (0, -1),
+        "sw": (-1, 1),
+        "southwest": (-1, 1),
+        "se": (0, 1),
+        "southeast": (0, 1),
+        "w": (-1, 0),
+        "west": (-1, 0),
+        "e": (1, 0),
+        "east": (1, 0),
+        # Vertical aliases
+        "n": (-1, -1),
+        "north": (-1, -1),
+        "s": (-1, 1),
+        "south": (-1, 1),
+    }
+
+    def move(self, direction: str, distance: int = 1) -> None:
+        """Move the agent in a hex direction respecting row parity.
+
+        Args:
+            direction: One of 'nw', 'ne', 'sw', 'se', 'w', 'e' (or aliases which are 'n' and 's').
+            distance: Number of steps to take.
+        """
+        direction = direction.lower()
+
+        for _ in range(distance):
+            row_index = self.cell.coordinate[1]
+            offset_map = (
+                self.DIRECTION_MAP_EVEN
+                if row_index % 2 == 0
+                else self.DIRECTION_MAP_ODD
+            )
+
+            if direction not in offset_map:
+                raise ValueError(f"Invalid hex direction: {direction}")
+
+            move_vector = offset_map[direction]
             self.move_relative(move_vector)

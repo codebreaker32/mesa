@@ -16,8 +16,8 @@
 :target: https://github.com/psf/black
 ```
 
-```{image} https://img.shields.io/matrix/project-mesa:matrix.org?label=chat&logo=Matrix
-:target: https://matrix.to/#/#project-mesa:matrix.org
+```{image} https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white
+:target: https://discord.gg/UUGJvdtEJu
 ```
 
 [Mesa] is an Apache2 licensed agent-based modeling (or ABM) framework in Python.
@@ -79,7 +79,7 @@ For help getting started with Mesa, check out these resources:
 - [Mesa releases] - Check what's new in the latest Mesa version
 - [Mesa Extensions] - Overview of mesa's Extensions
 - [GitHub Discussions] - Ask questions and discuss Mesa
-- [Matrix Chat Room] - Real-time chat with the Mesa community
+- [Discord] - Real-time chat with the Mesa community
 
 ### Development and Support
 
@@ -88,6 +88,7 @@ Mesa is an open source project and welcomes contributions:
 - [GitHub Repository] - Access the source code
 - [Issue Tracker] - Report bugs or suggest features
 - [Contributors Guide] - Learn how to contribute
+- [Developer Guide] - How we work: design principles, standards, review and past decisions
 - [GSoC at Mesa — Candidates Guide] - For candidates interested in participating in the Google Summer of Code at Mesa
 
 ### Citing Mesa
@@ -108,6 +109,7 @@ Overview <overview>
 Examples <examples>
 Migration guide <migration_guide>
 API Documentation <apis/api_main>
+Developer guide <development/index>
 
 ```
 
@@ -118,12 +120,13 @@ API Documentation <apis/api_main>
 - {ref}`search`
 
 [contributors guide]: https://github.com/mesa/mesa/blob/main/CONTRIBUTING.md
+[developer guide]: development/index
 [GSoC at Mesa — Candidates Guide]: GSoC.md
 [github repository]: https://github.com/mesa/mesa/
 [github discussions]: https://github.com/mesa/mesa/discussions
 [Mesa releases]: https://github.com/mesa/mesa/releases
 [issue tracker]: https://github.com/mesa/mesa/issues
-[matrix chat room]: https://matrix.to/#/#project-mesa:matrix.org
+[discord]: https://discord.gg/UUGJvdtEJu
 [mesa]: https://github.com/mesa/mesa/
 [mesa overview]: overview
 [mesa examples]: https://mesa.readthedocs.io/stable/examples.html

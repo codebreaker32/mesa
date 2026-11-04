@@ -1,9 +1,12 @@
 """A Continuous Space class."""
 
+from __future__ import annotations
+
 import warnings
 from collections.abc import Iterable
 from itertools import compress
 from random import Random
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -11,8 +14,11 @@ from scipy.spatial.distance import cdist
 
 from mesa.agent import Agent, AgentSet
 
+if TYPE_CHECKING:
+    from .continuous_space_agents import ContinuousSpaceAgent
 
-class ContinuousSpace:
+
+class ContinuousSpace[A: ContinuousSpaceAgent]:
     """Continuous space where each agent can have an arbitrary position."""
 
     @property
@@ -101,7 +107,7 @@ class ContinuousSpace:
         self._index_to_agent: dict[int, Agent] = {}
 
     @property
-    def agents(self) -> AgentSet:
+    def agents(self) -> AgentSet[A]:
         """Return an AgentSet with the agents in the space."""
         return AgentSet(self.active_agents, random=self.random)
 
@@ -277,8 +283,31 @@ class ContinuousSpace:
             )
             k = n
 
-        # np.argpartition expects zero-based index (k-1) and returns the indices of the k smallest distances
+        # np.argpartition expects zero-based index (k-1) and returns the indices
+        # of the k smallest distances.
         indices = np.argpartition(dists, k - 1)[:k]
+
+        # argpartition may choose any agents tied at the cutoff. Keep all closer
+        # agents, then fill the remaining places with the earliest inserted ties.
+        cutoff = dists[indices].max()
+        closer = np.flatnonzero(dists < cutoff)
+        cutoff_ties = np.flatnonzero(dists == cutoff)
+        if len(cutoff_ties) > k - len(closer):
+            cutoff_indices = np.flatnonzero(dists[indices] == cutoff)
+            cutoff_ties = sorted(cutoff_ties, key=lambda i: agents[i].unique_id)
+            indices[cutoff_indices] = cutoff_ties[: k - len(closer)]
+
+        # Preserve the partial-selection ordering between distinct distances,
+        # while making the ranking within each selected tie follow insertion order.
+        tied_positions: dict[float, list[int]] = {}
+        for position, index in enumerate(indices):
+            tied_positions.setdefault(float(dists[index]), []).append(position)
+        for positions in tied_positions.values():
+            if len(positions) > 1:
+                indices[positions] = sorted(
+                    indices[positions], key=lambda i: agents[i].unique_id
+                )
+
         agents = [agents[i] for i in indices]
         return agents, dists[indices]
 

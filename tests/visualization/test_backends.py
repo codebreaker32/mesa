@@ -95,6 +95,60 @@ def test_matplotlib_backend_collects_agent_data():
     assert "loc" in data and data["loc"].shape[0] == 1
 
 
+@pytest.mark.parametrize("edgecolor", ["black", (1.0, 0.0, 0.0, 1.0)])
+def test_matplotlib_backend_collects_partial_edgecolors(edgecolor):
+    """Collecting agent data preserves edgecolor alignment across agents."""
+    mb = MatplotlibBackend(space_drawer=MagicMock())
+
+    class DummyAgent:
+        position = (0, 0)
+        cell = types.SimpleNamespace(coordinate=(0, 0))
+
+        def __init__(self, kind):
+            self.kind = kind
+
+    class DummySpace:
+        agents: ClassVar[list] = [DummyAgent(0), DummyAgent(1)]
+
+    def agent_portrayal(agent):
+        portrayal = {"size": 5, "color": "red", "marker": "o"}
+        if agent.kind == 0:
+            portrayal["edgecolors"] = edgecolor
+        return portrayal
+
+    with pytest.warns(FutureWarning):
+        data = mb.collect_agent_data(DummySpace(), agent_portrayal)
+
+    assert data["edgecolors"].tolist() == [edgecolor, "none"]
+    assert len(data["edgecolors"]) == data["loc"].shape[0]
+
+
+def test_matplotlib_backend_collects_tuple_markers_without_flattening():
+    """Equal-length tuple marker specs must stay 1D, not collapse into a 2D array.
+
+    Regression guard: a naive ``np.asarray(value, dtype=object)`` silently turns a
+    list of same-length tuples (e.g. Matplotlib's ``(numsides, style, angle)``
+    polygon marker spec) into a 2D array of scalars instead of a 1D array of
+    tuple objects.
+    """
+    mb = MatplotlibBackend(space_drawer=MagicMock())
+
+    class DummyAgent:
+        position = (0, 0)
+        cell = types.SimpleNamespace(coordinate=(0, 0))
+
+    class DummySpace:
+        agents: ClassVar[list] = [DummyAgent(), DummyAgent()]
+
+    def agent_portrayal(agent):
+        return AgentPortrayalStyle(size=5, color="red", marker=(3, 0, 0))
+
+    data = mb.collect_agent_data(DummySpace(), agent_portrayal)
+
+    assert data["marker"].shape == (2,)
+    assert list(data["marker"]) == [(3, 0, 0), (3, 0, 0)]
+
+
 def test_matplotlib_backend_draw_agents():
     """Test drawing agents."""
     mb = MatplotlibBackend(space_drawer=MagicMock())
@@ -380,6 +434,28 @@ def test_backend_collect_agent_data_projects_3d_continuous_positions(backend_cls
     assert data["loc"].shape == (2, 2)
     np.testing.assert_allclose(data["loc"][:, 0], [0.1, 0.4])
     np.testing.assert_allclose(data["loc"][:, 1], [0.2, 0.5])
+
+
+@pytest.mark.parametrize("backend_cls", [MatplotlibBackend, AltairBackend])
+def test_backend_collect_agent_data_warns_once_for_dict_portrayal(backend_cls):
+    """The dict portrayal FutureWarning is emitted once per call, not per agent."""
+    backend = backend_cls(space_drawer=MagicMock())
+
+    class DummyAgent:
+        position = (0, 0)
+        cell = types.SimpleNamespace(coordinate=(0, 0))
+
+    class DummySpace:
+        agents: ClassVar[list] = [DummyAgent() for _ in range(5)]
+
+    def agent_portrayal_dict(agent):
+        return {"size": 5, "color": "red", "marker": "o"}
+
+    with pytest.warns(FutureWarning) as record:
+        data = backend.collect_agent_data(DummySpace(), agent_portrayal_dict)
+
+    assert len([w for w in record if issubclass(w.category, FutureWarning)]) == 1
+    assert data["loc"].shape[0] == 5
 
 
 def test_backends_handle_errors():

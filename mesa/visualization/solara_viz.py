@@ -53,6 +53,10 @@ if TYPE_CHECKING:
 _mesa_logger = create_module_logger()
 
 _SUPPORTED_MODEL_PARAM_TYPES = (UserParam, dict, int, float, bool, str)
+_NON_KEYWORD_PARAM_KINDS = (
+    inspect.Parameter.POSITIONAL_ONLY,
+    inspect.Parameter.VAR_POSITIONAL,
+)
 
 
 def _validate_model_params(model_params: dict) -> None:
@@ -109,16 +113,16 @@ def SolaraViz(
             Currently supported arguments:
             - additional_imports: Dictionary of names to objects to import into the command console.
                 - Example:
-                    >>> console_kwargs = {"additional_imports": {"numpy": np}}
-                    >>> SolaraViz(model, console_kwargs=console_kwargs)
+                    >>> console_kwargs = {"additional_imports": {"numpy": np}}  # doctest: +SKIP
+                    >>> SolaraViz(model, console_kwargs=console_kwargs)  # doctest: +SKIP
 
     Returns:
         solara.component: A Solara component that renders the visualization interface for the model.
 
     Example:
-        >>> model = MyModel()
-        >>> page = SolaraViz(model)
-        >>> page
+        >>> model = MyModel()  # doctest: +SKIP
+        >>> page = SolaraViz(model)  # doctest: +SKIP
+        >>> page  # doctest: +SKIP
 
     Notes:
         - The `model` argument can be either a direct model instance or a reactive model. If a direct
@@ -574,7 +578,7 @@ def ModelController(
             for _ in range(render_interval.value):
                 model.value.step()
                 running.value = model.value.running
-                if not playing.value:
+                if not playing.value or not running.value:
                     break
             if not use_threads.value:
                 force_update()
@@ -583,6 +587,8 @@ def ModelController(
             for _ in range(render_interval.value):
                 model.value.step()
                 running.value = model.value.running
+                if not running.value:
+                    break
             force_update()
 
     @function_logger(__name__)
@@ -690,13 +696,13 @@ def ModelCreator(
         solara.component: A Solara component that renders the model creation and management interface.
 
     Example:
-        >>> model = solara.reactive(MyModel())
+        >>> model = solara.reactive(MyModel())  # doctest: +SKIP
         >>> model_params = {
-        >>>     "param1": {"type": "slider", "value": 10, "min": 0, "max": 100},
-        >>>     "param2": {"type": "slider", "value": 5, "min": 1, "max": 10},
-        >>> }
-        >>> creator = ModelCreator(model, model_params)
-        >>> creator
+        ...     "param1": {"type": "slider", "value": 10, "min": 0, "max": 100},
+        ...     "param2": {"type": "slider", "value": 5, "min": 1, "max": 10},
+        ... }
+        >>> creator = ModelCreator(model, model_params)  # doctest: +SKIP
+        >>> creator  # doctest: +SKIP
 
     Notes:
         - The `model_params` argument should be a dictionary where keys are parameter names and values either fixed values
@@ -752,12 +758,11 @@ def _check_model_params(model_or_func, model_params):
 
     model_parameters = inspect.signature(init_func).parameters
 
-    has_var_positional = any(
-        param.kind == inspect.Parameter.VAR_POSITIONAL
-        for param in model_parameters.values()
+    has_non_keyword_param = any(
+        param.kind in _NON_KEYWORD_PARAM_KINDS for param in model_parameters.values()
     )
 
-    if has_var_positional:
+    if has_non_keyword_param:
         raise ValueError(
             "Mesa's visualization requires the use of keyword arguments to ensure the parameters are passed to Solara correctly. Please ensure all model parameters are of form param=value"
         )

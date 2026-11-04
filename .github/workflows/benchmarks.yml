@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.14'
       - name: Add project directory to PYTHONPATH
@@ -29,11 +29,11 @@ jobs:
       - name: Install uv
         run: pip install uv
       - name: Install dependencies
-        run: uv pip install --system numpy pandas tqdm tabulate matplotlib solara networkx scipy
+        run: uv pip install --system numpy pandas tqdm tabulate matplotlib solara networkx scipy pyarrow
 
       # Benchmarks on main
       - name: Checkout main branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           repository: mesa/mesa
@@ -50,7 +50,7 @@ jobs:
           name: timings-main
           path: benchmarks/timings_1.pickle
       - name: Checkout PR branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -73,13 +73,10 @@ jobs:
         working-directory: benchmarks
         run: python compare_timings.py > benchmark_output.txt
 
-      # Save PR number and results for the comment workflow
-      - name: Save PR number
-        run: echo "${{ github.event.pull_request.number }}" > benchmarks/pr_number.txt
+      # Save benchmark results for the comment workflow
       - name: Upload benchmark comparison
         uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: |
             benchmarks/benchmark_output.txt
-            benchmarks/pr_number.txt

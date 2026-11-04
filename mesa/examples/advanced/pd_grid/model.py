@@ -13,7 +13,7 @@ class PrisonersDilemmaScenario(Scenario):
     width: int = 50
     height: int = 50
     activation_order: Literal["Sequential", "Random", "Simultaneous"] = "Random"
-    payoff: None | dict[tuple[str, str], float] = None
+    payoff: dict[tuple[str, str], float] | None = None
     torus: bool = True
 
 
@@ -44,10 +44,12 @@ class PdGrid(mesa.Model):
         Create a new Spatial Prisoners' Dilemma Model.
 
         Args:
-            width, height: Grid size. There will be one agent per grid cell.
-            activation_order: Can be "Sequential", "Random", or "Simultaneous".
-                           Determines the agent activation regime.
-            payoffs: (optional) Dictionary of (move, neighbor_move) payoffs.
+            scenario: PrisonersDilemmaScenario with the model parameters:
+                width, height: Grid size. There will be one agent per grid cell.
+                activation_order: Can be "Sequential", "Random", or "Simultaneous".
+                               Determines the agent activation regime.
+                payoff: (optional) Dictionary of (move, neighbor_move) payoffs.
+                torus: Whether the grid wraps around at the edges.
         """
         super().__init__(scenario=scenario)
         self.activation_order = scenario.activation_order

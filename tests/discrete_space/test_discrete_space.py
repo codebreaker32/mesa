@@ -18,6 +18,7 @@ from mesa.discrete_space import (
     FixedAgent,
     Grid2DMovingAgent,
     HexGrid,
+    HexGridMovingAgent,
     Network,
     OrthogonalMooreGrid,
     OrthogonalVonNeumannGrid,
@@ -555,8 +556,17 @@ def test_empties_space():
     assert len(grid.empties) == n
 
     model = Model()
+    agents = []
     for i in range(8):
-        grid._cells[i].add_agent(CellAgent(model))
+        agent = CellAgent(model)
+        grid._cells[i].add_agent(agent)
+        agents.append(agent)
+
+    assert len(grid.empties) == n - 8
+
+    # Remove an agent and verify empties count updates
+    grid._cells[0].remove_agent(agents[0])
+    assert len(grid.empties) == n - 7
 
 
 def test_cell_missing_exception():
@@ -604,7 +614,7 @@ def test_grid_validate_parameters():
 
 
 def test_agents_property():
-    """Test empties method for Discrete Spaces."""
+    """Test agents property for Discrete Spaces."""
     n = 10
     m = 20
     rng = 42
@@ -666,6 +676,32 @@ def test_cell():
     cell_zero = Cell((1,), capacity=0, random=random.Random())
     with pytest.raises(CellFullException):
         cell_zero.add_agent(CellAgent(model))
+    assert cell_zero.empty is True
+    assert cell_zero.is_empty is True
+
+
+def test_cell_empty_attribute_initialized():
+    """A freshly created Cell exposes `empty` without first adding/removing an agent.
+
+    Cells that are not grid cells (e.g. those in Network and VoronoiGrid) have no
+    `empty` property layer overriding the attribute, so reading `cell.empty` must
+    work straight after construction. Regression test for the uninitialized
+    `_empty` slot which raised AttributeError.
+    """
+    model = Model()
+    cell = Cell((0,), capacity=None, random=random.Random())
+
+    # readable immediately after construction, and consistent with is_empty
+    assert cell.empty is True
+    assert cell.empty == cell.is_empty
+
+    # tracks agent occupancy
+    agent = CellAgent(model)
+    cell.add_agent(agent)
+    assert cell.empty is False
+
+    cell.remove_agent(agent)
+    assert cell.empty is True
 
 
 def test_cell_deepcopy():
@@ -796,6 +832,14 @@ def test_cell_collection():
     cells = collection.select(at_most=0.5)
     assert len(cells) == 5
 
+    for bad_at_most in (float("nan"), 0.0, -0.5, 1.5, -1, -5):
+        with pytest.raises(ValueError):
+            collection.select(at_most=bad_at_most)
+
+    for bad_type in (False, True, "1", [1], None):
+        with pytest.raises(TypeError, match="must be an integer or float"):
+            collection.select(at_most=bad_type)
+
     cells = collection.select()
     assert len(cells) == len(collection)
 
@@ -885,6 +929,131 @@ def test_property_layer_integration():
         grid.create_property_layer("width")
 
 
+@pytest.mark.parametrize("method", ["create_property_layer", "add_property_layer"])
+@pytest.mark.parametrize(
+    "reserved",
+    ["dimensions", "torus", "_cells", "_celllist", "cell_klass", "_read_only_layers"],
+)
+def test_property_layer_rejects_grid_instance_attribute_collision(method, reserved):
+    """Reject conflicting names before changing grid state or cell accessors."""
+    grid = OrthogonalMooreGrid((3, 3), capacity=1, random=random.Random(42))
+    original = getattr(grid, reserved)
+
+    with pytest.raises(
+        ValueError,
+        match=f"property_layer '{reserved}' conflicts with an existing Grid attribute",
+    ):
+        if method == "create_property_layer":
+            grid.create_property_layer(reserved, read_only=True)
+        else:
+            grid.add_property_layer(reserved, np.zeros((3, 3)), read_only=True)
+
+    assert getattr(grid, reserved) is original
+    assert set(grid.property_layers) == {"empty"}
+    assert grid.cell_klass.property_layers == {"empty"}
+    assert grid._read_only_layers == set()
+    cell = grid.find_nearest_cell([1.2, 1.2])
+    assert cell.coordinate == (1, 1)
+    assert len(grid.empties) == 9
+    CellAgent(Model(rng=42)).cell = cell
+    assert cell.is_full
+    assert len(grid.empties) == 8
+
+
+@pytest.mark.parametrize("method", ["create_property_layer", "add_property_layer"])
+def test_property_layer_duplicate_name_preserves_existing_layer(method):
+    """Duplicate names keep the original array and its read-only accessor."""
+    grid = OrthogonalMooreGrid((3, 3), random=random.Random(42))
+    original = grid.create_property_layer("sugar", default_value=1, read_only=True)
+
+    with pytest.raises(ValueError, match="property_layer 'sugar' already exists"):
+        if method == "create_property_layer":
+            grid.create_property_layer("sugar", default_value=2)
+        else:
+            grid.add_property_layer("sugar", np.full((3, 3), 2))
+
+    assert grid.sugar is original
+    assert grid.property_layers["sugar"] is original
+    np.testing.assert_array_equal(original, np.ones((3, 3)))
+    with pytest.raises(AttributeError):
+        grid._cells[(1, 1)].sugar = 3
+
+
+@pytest.mark.parametrize("method", ["create_property_layer", "add_property_layer"])
+def test_property_layer_can_be_readded_after_removal(method):
+    """Removing a layer releases its name for a new array and accessor."""
+    grid = OrthogonalMooreGrid((3, 3), random=random.Random(42))
+    grid.create_property_layer("sugar", read_only=True)
+    grid.remove_property_layer("sugar")
+
+    assert not hasattr(grid, "sugar")
+    assert not hasattr(grid._cells[(1, 1)], "sugar")
+    assert "sugar" not in grid.property_layers
+    assert "sugar" not in grid.cell_klass.property_layers
+    assert "sugar" not in grid._read_only_layers
+
+    if method == "create_property_layer":
+        grid.create_property_layer("sugar", default_value=2)
+    else:
+        grid.add_property_layer("sugar", np.full((3, 3), 2))
+
+    assert grid.sugar is grid.property_layers["sugar"]
+    cell = grid._cells[(1, 1)]
+    assert cell.sugar == 2
+    cell.sugar = 3
+    assert grid.sugar[1, 1] == 3
+
+
+def test_property_layer_cannot_remove_empty():
+    """Ensure remove_property_layer rejects removing the built-in 'empty' layer."""
+    grid = OrthogonalMooreGrid((3, 3), random=random.Random(42))
+    with pytest.raises(
+        ValueError, match="Cannot remove the built-in 'empty' property layer"
+    ):
+        grid.remove_property_layer("empty")
+
+    assert "empty" in grid.property_layers
+    assert hasattr(grid, "empty")
+    assert hasattr(grid.cell_klass, "empty")
+    assert "empty" in grid.cell_klass.property_layers
+    assert hasattr(grid._cells[(1, 1)], "empty")
+
+
+@pytest.mark.parametrize(
+    "reserved",
+    ["is_empty", "is_full", "neighborhood", "position", "coordinate", "connections"],
+)
+def test_property_layer_rejects_cell_attribute_collision(reserved):
+    """A property_layer name must not shadow an existing Cell attribute.
+
+    Regression test for a bug where creating a property layer named e.g.
+    "is_empty" or "is_full" silently replaced the live Cell.is_empty /
+    Cell.is_full properties with a static array-backed accessor, corrupting
+    DiscreteSpace.empties and Grid.cells_with_capacity with no error raised.
+    The check also covers __slots__ members ("coordinate", "connections"),
+    since a slot is a descriptor in the class __dict__.
+    """
+    grid = OrthogonalMooreGrid((3, 3), torus=False, capacity=1, random=random.Random(1))
+
+    with pytest.raises(ValueError):
+        grid.create_property_layer(reserved, default_value=False, dtype=bool)
+    assert reserved not in grid.property_layers
+
+    # occupancy must still be computed correctly after the rejection
+    model = Model(rng=1)
+    assert len(grid.empties) == 9
+    cell = grid._cells[(1, 1)]
+    CellAgent(model).cell = cell
+    assert cell.is_full is True
+    assert len(list(grid.cells_with_capacity)) == 8
+
+
+def test_property_layer_empty_bootstrap_is_not_blocked():
+    """The internal "empty" property layer created by Grid.__init__ must still work."""
+    grid = OrthogonalMooreGrid((3, 3), torus=False, random=random.Random(1))
+    assert "empty" in grid.property_layers
+
+
 def test_copy_pickle_with_property_layers():
     """Test deepcopy and pickle with dynamically created GridClass."""
     dimensions = (10, 10)
@@ -901,6 +1070,131 @@ def test_copy_pickle_with_property_layers():
     assert grid2._cells[(0, 0)].empty
     grid2._cells[(0, 0)].empty = False
     assert grid2._cells[(0, 0)].empty == grid2.property_layers["empty"][0, 0]
+
+
+def test_read_only_property_layer_survives_pickle_and_deepcopy():
+    """A read-only property layer must stay read-only after pickling/deepcopy.
+
+    Previously Grid.__setstate__ rebuilt every property layer with a setter,
+    silently dropping the read_only restriction on the round trip.
+    """
+    grid = OrthogonalMooreGrid((3, 3), torus=False, random=random.Random(42))
+    grid.create_property_layer("protected", default_value=0.0, read_only=True)
+    grid.create_property_layer("sugar", default_value=1.0, read_only=False)
+
+    for label, restored in [
+        ("deepcopy", copy.deepcopy(grid)),
+        ("pickle", pickle.loads(pickle.dumps(grid))),  # noqa: S301
+    ]:
+        cell = restored._cells[(0, 0)]
+        # read-only layer must still reject writes
+        with pytest.raises(AttributeError):
+            cell.protected = 99.0
+        # read-write layer must still accept writes
+        cell.sugar = 5.0
+        assert cell.sugar == 5.0, label
+
+
+def test_property_layer_accessors_survive_copy_on_all_cells():
+    """Every cell, not just the first one, keeps its property_layer accessors after a round trip.
+
+    Previously unpickle_gridcell created a separate GridCell class for every cell
+    and Grid.__setstate__ re-attached the accessors only to the class of the first
+    cell. As a result cell.sugar raised AttributeError on all other cells,
+    cell.empty no longer tracked the "empty" layer, and pickling the restored
+    grid a second time failed.
+    """
+    grid = OrthogonalMooreGrid((3, 3), torus=False, random=random.Random(42))
+    grid.create_property_layer("sugar", default_value=1.0)
+
+    for label, restored in [
+        ("deepcopy", copy.deepcopy(grid)),
+        ("pickle", pickle.loads(pickle.dumps(grid))),  # noqa: S301
+    ]:
+        # all cells share one class, and it is the grid's cell_klass
+        assert {type(cell) for cell in restored.all_cells} == {restored.cell_klass}, (
+            label
+        )
+        assert restored.cell_klass.property_layers == {"empty", "sugar"}, label
+
+        for cell in restored.all_cells:
+            assert cell.sugar == 1.0, label
+            cell.sugar = 5.0
+            assert restored.property_layers["sugar"][cell.coordinate] == 5.0, label
+
+        cell = restored._cells[(2, 2)]
+        cell.empty = False
+        assert not restored.property_layers["empty"][2, 2], label
+
+        # layers created after the round trip reach every cell as well
+        restored.create_property_layer("water", default_value=2.0)
+        assert all(cell.water == 2.0 for cell in restored.all_cells), label
+
+        # and the restored grid can be pickled again
+        twice = pickle.loads(pickle.dumps(restored))  # noqa: S301
+        assert all(cell.sugar == 5.0 for cell in twice.all_cells), label
+        assert all(cell.water == 2.0 for cell in twice.all_cells), label
+
+
+class SlottedCustomCell(Cell):
+    """A user cell class with an extra slot, as the tutorials recommend."""
+
+    __slots__ = ("temperature",)
+
+    def __init__(self, coordinate, capacity=None, random=None):
+        """Create the cell with a default temperature."""
+        super().__init__(coordinate, capacity=capacity, random=random)
+        self.temperature = 20.0
+
+
+class DictCustomCell(Cell):
+    """A user cell class without __slots__, so its instances carry a __dict__."""
+
+
+@pytest.mark.parametrize("cell_klass", [SlottedCustomCell, DictCustomCell])
+def test_custom_cell_klass_survives_copy_and_pickle(cell_klass):
+    """A grid built on a user-supplied cell class survives deepcopy and pickle.
+
+    The restored cells keep the user's class as their base, their own attributes
+    (in a slot or in __dict__) and the property_layer accessors.
+    """
+    grid = OrthogonalMooreGrid(
+        (3, 3), torus=False, random=random.Random(42), cell_klass=cell_klass
+    )
+    grid.create_property_layer("sugar", default_value=1.0)
+    grid._cells[(1, 1)].temperature = 99.0
+    grid._cells[(1, 1)].sugar = 3.0
+
+    for label, restored in [
+        ("deepcopy", copy.deepcopy(grid)),
+        ("pickle", pickle.loads(pickle.dumps(grid))),  # noqa: S301
+    ]:
+        # one GridCell class, derived from the user's class
+        assert {type(cell) for cell in restored.all_cells} == {restored.cell_klass}, (
+            label
+        )
+        assert restored.cell_klass.__bases__ == (cell_klass,), label
+        assert all(isinstance(cell, cell_klass) for cell in restored.all_cells), label
+
+        # the cells' own attributes survive, whether stored in a slot or in __dict__
+        assert restored._cells[(1, 1)].temperature == 99.0, label
+        if cell_klass is SlottedCustomCell:
+            assert restored._cells[(0, 0)].temperature == 20.0, label
+
+        # property layers work on every cell and write through to the array
+        assert restored._cells[(1, 1)].sugar == 3.0, label
+        for cell in restored.all_cells:
+            cell.sugar += 1.0
+        assert (
+            restored.property_layers["sugar"] == grid.property_layers["sugar"] + 1
+        ).all(), label
+        restored._cells[(2, 2)].empty = False
+        assert not restored.property_layers["empty"][2, 2], label
+
+        # and the restored grid can be pickled again
+        twice = pickle.loads(pickle.dumps(restored))  # noqa: S301
+        assert twice._cells[(1, 1)].temperature == 99.0, label
+        assert twice._cells[(1, 1)].sugar == 4.0, label
 
 
 def test_multiple_property_layers():
@@ -1029,6 +1323,30 @@ def test_grid2DMovingAgent():  # noqa: D103
         agent.move("back")
 
 
+def test_hexGridMovingAgent():
+    """Test HexGridMovingAgent with 'even-r' (Even Row Shove) geometry."""
+    grid = HexGrid((10, 10), torus=False, random=random.Random(42))
+    model = Model()
+    agent = HexGridMovingAgent(model)
+
+    # 'nw' offset should be (0, -1).
+    agent.cell = grid[5, 2]
+    agent.move("nw")
+
+    assert agent.cell.coordinate == (5, 1)
+
+    # 'nw' offset should be (-1, -1)
+    agent.cell = grid[5, 1]  # Reset position to a known Odd row
+    agent.move("nw")
+
+    assert agent.cell.coordinate == (4, 0)
+
+    # West is (-1, 0) for both parities.
+    agent.cell = grid[5, 2]
+    agent.move("w")
+    assert agent.cell.coordinate == (4, 2)
+
+
 def test_patch():  # noqa: D103
     cell1 = Cell((1,), capacity=None, random=random.Random())
     cell2 = Cell((2,), capacity=None, random=random.Random())
@@ -1056,9 +1374,6 @@ def test_copying_discrete_spaces():  # noqa: D103
         grid = OrthogonalMooreGrid((100, 100), random=random.Random(42))
         grid_copy = copy.deepcopy(grid)
 
-        c1 = grid[(5, 5)].connections
-        c2 = grid_copy[(5, 5)].connections
-
         for c1, c2 in zip(grid.all_cells, grid_copy.all_cells):
             for k, v in c1.connections.items():
                 assert v.coordinate == c2.connections[k].coordinate
@@ -1077,9 +1392,6 @@ def test_copying_discrete_spaces():  # noqa: D103
         grid = HexGrid((100, 100), random=random.Random(42))
         grid_copy = copy.deepcopy(grid)
 
-        c1 = grid[(5, 5)].connections
-        c2 = grid_copy[(5, 5)].connections
-
         for c1, c2 in zip(grid.all_cells, grid_copy.all_cells):
             for k, v in c1.connections.items():
                 assert v.coordinate == c2.connections[k].coordinate
@@ -1095,6 +1407,20 @@ def test_select_random_agent_empty_safe():
         empty_collection.select_random_agent()
     assert empty_collection.select_random_agent(default=None) is None
     assert empty_collection.select_random_agent(default="Empty") == "Empty"
+
+
+def test_select_random_cell_empty_safe():
+    """Test that select_random_cell raises LookupError on an empty collection and honors default."""
+    rng = random.Random(42)
+    empty_collection = CellCollection([], random=rng)
+    with pytest.raises(LookupError):
+        empty_collection.select_random_cell()
+    assert empty_collection.select_random_cell(default=None) is None
+    assert empty_collection.select_random_cell(default="Empty") == "Empty"
+
+    # A non-empty collection still returns a cell from the collection
+    collection = CellCollection([Cell((i,), random=rng) for i in range(5)], random=rng)
+    assert collection.select_random_cell() in collection
 
 
 def test_infinite_loop_on_full_grid():
@@ -1114,6 +1440,42 @@ def test_infinite_loop_on_full_grid():
     # 4. Ensure ValueError is raised with a clear message
     with pytest.raises(ValueError, match="Grid is completely full"):
         grid.select_random_empty_cell()
+
+
+@pytest.mark.parametrize("space_factory", ["network", "voronoi"])
+def test_select_random_empty_cell_on_full_space_raises(space_factory):
+    """A full space that does not override select_random_empty_cell still explains itself.
+
+    Network and VoronoiGrid inherit DiscreteSpace.select_random_empty_cell,
+    which used to call random.choice on an empty list and surface the stdlib
+    "Cannot choose from an empty sequence" IndexError, saying nothing about
+    the space being full.
+    """
+    model = Model()
+    if space_factory == "network":
+        space = Network(nx.cycle_graph(4), random=model.random)
+    else:
+        space = VoronoiGrid(
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]], random=model.random
+        )
+
+    for cell in space.all_cells:
+        CellAgent(model).cell = cell
+    assert len(space.empties) == 0
+
+    with pytest.raises(SpaceException, match="completely full"):
+        space.select_random_empty_cell()
+
+
+def test_select_random_empty_cell_still_works_when_space_has_room():
+    """The guard must not fire while an empty cell is left."""
+    model = Model()
+    space = Network(nx.cycle_graph(4), random=model.random)
+    cells = list(space.all_cells)
+    for cell in cells[:-1]:
+        CellAgent(model).cell = cell
+
+    assert space.select_random_empty_cell() is cells[-1]
 
 
 def test_select_random_empty_cell_fallback():
@@ -1161,6 +1523,57 @@ def test_fixed_agent_removal_state():
 
     assert agent not in cell1.agents
     assert agent.cell is None
+
+
+def test_fixed_agent_assign_none_while_unplaced():
+    """Assigning None to an unplaced fixed agent does nothing, it can still be placed later."""
+    model = Model()
+    cell = Cell((1,), capacity=None, random=random.Random())
+    agent = FixedAgent(model)
+
+    agent.cell = None
+    assert agent.cell is None
+
+    agent.cell = cell
+    assert agent.cell is cell
+    assert agent in cell.agents
+
+
+def test_fixed_agent_remove_unplaced_raises():
+    """Removing an unplaced fixed agent raises and leaves the agent untouched."""
+    model = Model()
+    agent = FixedAgent(model)
+
+    with pytest.raises(ValueError, match="not in a cell"):
+        agent.remove()
+
+    # the check runs before anything is removed
+    assert agent in model.agents
+    assert agent.cell is None
+
+
+def test_fixed_agent_remove_twice_raises():
+    """A second remove() raises, since the agent is no longer in a cell."""
+    model = Model()
+    cell = Cell((1,), capacity=None, random=random.Random())
+    agent = FixedAgent(model)
+    agent.cell = cell
+
+    agent.remove()
+    with pytest.raises(ValueError, match="not in a cell"):
+        agent.remove()
+
+
+def test_fixed_agent_cannot_unassign_after_placement():
+    """Once placed, a fixed agent can't be set back to None."""
+    model = Model()
+    cell = Cell((1,), capacity=None, random=random.Random())
+    agent = FixedAgent(model)
+    agent.cell = cell
+
+    with pytest.raises(ValueError, match="Cannot move agent"):
+        agent.cell = None
+    assert agent.cell is cell
 
 
 def test_pickling_cell():
@@ -1530,3 +1943,26 @@ def test_voronoi_int_capacity_enforced_at_runtime() -> None:
     a1.move_to(cell)
     with pytest.raises(CellFullException):
         a2.move_to(cell)
+
+
+def test_cell_neighborhood_self_loop_bug_3885():
+    """Verifying radius=1 neighborhood excludes self on self-connected cells when include_center=False (#3885)."""
+    # 1. Torus Grid (1xN ring wrapping around)
+    grid = OrthogonalVonNeumannGrid((5, 1), torus=True, random=random.Random(42))
+    cell = grid._cells[(2, 0)]
+    neighborhood = [
+        c.coordinate for c in cell.get_neighborhood(radius=1, include_center=False)
+    ]
+    assert cell.coordinate not in neighborhood, (
+        f"Cell {cell.coordinate} found in its own neighborhood!"
+    )
+
+    # 2. Network with a self-loop
+    net = Network(nx.Graph([(0, 1), (1, 1), (1, 2)]), random=random.Random(42))
+    net_cell = net._cells[1]
+    net_neighborhood = [
+        c.coordinate for c in net_cell.get_neighborhood(radius=1, include_center=False)
+    ]
+    assert net_cell.coordinate not in net_neighborhood, (
+        f"Node {net_cell.coordinate} found in its own neighborhood!"
+    )
